@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package edth.salute;
+
+message SalutePing {
+  fixed64 uid        = 1;  // 8 B numeric ID
+  fixed64 ts_ns      = 2;  // 8 B timestamp (ns)
+  sfixed32 lat_q     = 3;  // 4 B lat *1e7
+  sfixed32 lon_q     = 4;  // 4 B lon *1e7
+  fixed32 geo_conf_m = 5;  // 4 B confidence (m)
+  uint32  event_code = 6;  // launch=1, drop=2, decoy=3
+  bytes   hash_pref  = 7;  // 4-8 B SHA256 prefix
+}
