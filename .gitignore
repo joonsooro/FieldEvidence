@@ -1,0 +1,8 @@
+venv/
+.venv/
+__pycache__/
+*.mp4
+*.engine
+*.onnx
+*.pb
+out/
