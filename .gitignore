@@ -1,8 +1,24 @@
-venv/
+# Python venv
 .venv/
+venv/
+
+# Python cache/bytecode
 __pycache__/
-*.mp4
-*.engine
+*.pyc
+*.pyo
+*.pyd
+
+# Build / model artifacts
 *.onnx
+*.engine
 *.pb
+
+# Generated media/data
+*.mp4
 out/
+data/synthetic/
+data/labels/
+
+# IDE/OS noise
+.vscode/
+.DS_Store
