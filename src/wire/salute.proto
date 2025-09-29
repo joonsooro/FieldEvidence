@@ -1,13 +1,13 @@
 syntax = "proto3";
+package wire;
 
-package edth.salute;
-
+// ~40–60 bytes typical payload when serialized
 message SalutePing {
-  fixed64 uid        = 1;  // 8 B numeric ID
-  fixed64 ts_ns      = 2;  // 8 B timestamp (ns)
-  sfixed32 lat_q     = 3;  // 4 B lat *1e7
-  sfixed32 lon_q     = 4;  // 4 B lon *1e7
-  fixed32 geo_conf_m = 5;  // 4 B confidence (m)
-  uint32  event_code = 6;  // launch=1, drop=2, decoy=3
-  bytes   hash_pref  = 7;  // 4-8 B SHA256 prefix
+  fixed64 uid         = 1;  // 8B numeric ID (e.g., low 64 bits of hash(uid:frame))
+  fixed64 ts_ns       = 2;  // 8B timestamp in nanoseconds
+  sfixed32 lat_q      = 3;  // 4B: int(lat * 1e7)
+  sfixed32 lon_q      = 4;  // 4B: int(lon * 1e7)
+  fixed32 geo_conf_m  = 5;  // 4B: confidence radius (meters)
+  uint32 event_code   = 6;  // varint: 1=launch,2=drop,3=decoy
+  bytes hash_pref     = 7;  // 4–8B: SHA-256 prefix (demo only)
 }

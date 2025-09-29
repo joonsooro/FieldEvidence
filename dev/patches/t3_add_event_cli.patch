@@ -1,0 +1,61 @@
+# 1) 패치 저장
+mkdir -p dev/patches
+cat > dev/patches/t3_event_thresholds_and_synth1.patch <<'PATCH'
+*** Begin Patch
+*** Update File: Makefile
+@@
+-synth1:
+-	python -m src.synth.synthesize \
+-	  --carrier data/raw/carrier.mp4 \
+-	  --sprite data/sprites/parasite.png \
+-	  --out_dir data/synthetic \
+-	  --labels_dir data/labels \
+-	  --clips 1 --seed 42 --sep_frame_min 100 --sep_frame_max 120
++synth1:
++	python -m src.synth.synthesize \
++	  --carrier data/raw/carrier.mp4 \
++	  --sprite  data/sprites/parasite.png \
++	  --out_dir data/synthetic --labels_dir data/labels \
++	  --clips 1 --seed 42 --sep_frame_min 110 --sep_frame_max 120 \
++	  --num_parasites 2 --anchor_mode wings \
++	  --sprite_scale_min 0.04 --sprite_scale_max 0.06 \
++	  --wing_dx_ratio 0.38 --wing_dy_ratio 0.06 \
++	  --sep_vx_range -5 5 --sep_vy_range -10 -4 --gravity 0.9 \
++	  --event_dist_ratio 1.1 --event_min_frames 3
+*** End Patch
+PATCH
+
+# 2) synthesize.py에 이벤트 임계 CLI 추가 패치 (안전에 유니파이드로)
+cat > dev/patches/t3_add_event_cli.patch <<'PATCH'
+*** Begin Patch
+*** Update File: src/synth/synthesize.py
+@@
+-    parser.add_argument("--use_ffmpeg", type=int, default=0)
+-    parser.add_argument("--frames_per_clip", type=int, default=0)
++    parser.add_argument("--use_ffmpeg", type=int, default=0)
++    parser.add_argument("--frames_per_clip", type=int, default=0)
++    # --- NEW: event thresholds exposed as CLI ---
++    parser.add_argument("--event_dist_ratio", type=float, default=1.2,
++                        help="distance threshold as ratio of carrier_w (default 1.2)")
++    parser.add_argument("--event_min_frames", type=int, default=5,
++                        help="consecutive frames required (default 5)")
+@@
+-    # dist_thresh = 1.2 * carrier_w ; K = 5
+-    dist_thresh = 1.2 * carrier_w
+-    K = 5
++    # Use CLI-configurable thresholds
++    dist_thresh = args.event_dist_ratio * carrier_w
++    K = int(args.event_min_frames)
+*** End Patch
+PATCH
+
+# 3) 적용
+git apply dev/patches/t3_event_thresholds_and_synth1.patch
+git apply dev/patches/t3_add_event_cli.patch
+
+# 4) 실행
+make synth1
+
+
+
+

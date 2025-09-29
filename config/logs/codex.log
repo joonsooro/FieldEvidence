@@ -1,0 +1,94 @@
+2025-09-29 16:28:38 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:28:38 | INFO     | Starting Codex v1.8.14
+2025-09-29 16:28:38 | INFO     | Ensuring database is correct and up to date...
+2025-09-29 16:28:43 | SUCCESS  | Database ready.
+2025-09-29 16:28:43 | SUCCESS  | Created admin user.
+2025-09-29 16:28:43 | INFO     | Created AdminFlag: Auto Update = False
+2025-09-29 16:28:43 | INFO     | Created AdminFlag: Banner Text = True
+2025-09-29 16:28:43 | INFO     | Created AdminFlag: Folder View = True
+2025-09-29 16:28:43 | INFO     | Created AdminFlag: Import Metadata = True
+2025-09-29 16:28:43 | INFO     | Created AdminFlag: Lazy Import Metadata = True
+2025-09-29 16:28:43 | INFO     | Created AdminFlag: Non Users = True
+2025-09-29 16:28:43 | INFO     | Created AdminFlag: Registration = True
+2025-09-29 16:28:43 | INFO     | Created AdminFlag: Send Telemetry = True
+2025-09-29 16:28:43 | INFO     | Created Custom Covers Dir settings in the db.
+2025-09-29 16:28:43 | INFO     | root_path: 
+2025-09-29 16:28:43 | SUCCESS  | Running Codex v1.8.14
+2025-09-29 16:28:43 | SUCCESS  | BroadcastListener started.
+2025-09-29 16:28:49 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:28:50 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:28:51 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:28:52 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:28:52 | INFO     | LibrarianDaemon started all threads.
+2025-09-29 16:28:52 | SUCCESS  | LibrarianDaemon ready for tasks.
+2025-09-29 16:28:52 | INFO     | Started watching library /Users/I572166/Desktop/H/EDTH_HAMBURG/field-evidence/config/custom-covers with poll
+2025-09-29 16:28:53 | INFO     | Library /Users/I572166/Desktop/H/EDTH_HAMBURG/field-evidence/config/custom-covers waiting for manual poll.
+2025-09-29 16:28:53 | INFO     | Looking for search entries to update since the fracturing of the multiverse...
+2025-09-29 16:28:53 | INFO     | Looking for missing search entries to create...
+2025-09-29 16:28:53 | SUCCESS  | Search index found to be already synced in a moment.
+2025-09-29 16:33:10 | INFO     | Asking hypercorn to shut down gracefully. Could take 10 seconds...
+2025-09-29 16:33:10 | INFO     | LibrarianDaemon joined all threads.
+2025-09-29 16:33:10 | INFO     | BroadcastListener shutdown
+2025-09-29 16:33:10 | SUCCESS  | LibrarianDaemon finished.
+2025-09-29 16:33:11 | SUCCESS  | Goodbye.
+2025-09-29 16:33:14 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:33:14 | INFO     | Starting Codex v1.8.14
+2025-09-29 16:33:14 | INFO     | Ensuring database is correct and up to date...
+2025-09-29 16:33:14 | INFO     | Database up to date.
+2025-09-29 16:33:14 | SUCCESS  | Database ready.
+2025-09-29 16:33:15 | INFO     | root_path: 
+2025-09-29 16:33:15 | SUCCESS  | Running Codex v1.8.14
+2025-09-29 16:33:15 | SUCCESS  | BroadcastListener started.
+2025-09-29 16:33:16 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:33:17 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:33:18 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:33:19 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:33:19 | INFO     | LibrarianDaemon started all threads.
+2025-09-29 16:33:19 | SUCCESS  | LibrarianDaemon ready for tasks.
+2025-09-29 16:33:19 | INFO     | Started watching library /Users/I572166/Desktop/H/EDTH_HAMBURG/field-evidence/config/custom-covers with poll
+2025-09-29 16:33:19 | INFO     | Library /Users/I572166/Desktop/H/EDTH_HAMBURG/field-evidence/config/custom-covers waiting for manual poll.
+2025-09-29 16:33:19 | INFO     | Looking for search entries to update since the fracturing of the multiverse...
+2025-09-29 16:33:19 | INFO     | Looking for missing search entries to create...
+2025-09-29 16:33:19 | SUCCESS  | Search index found to be already synced in a moment.
+2025-09-29 16:37:47 | INFO     | Asking hypercorn to shut down gracefully. Could take 10 seconds...
+2025-09-29 16:37:47 | INFO     | LibrarianDaemon joined all threads.
+2025-09-29 16:37:47 | INFO     | BroadcastListener shutdown
+2025-09-29 16:37:47 | SUCCESS  | LibrarianDaemon finished.
+2025-09-29 16:37:47 | SUCCESS  | Goodbye.
+2025-09-29 16:37:50 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:37:50 | INFO     | Starting Codex v1.8.14
+2025-09-29 16:37:50 | INFO     | Ensuring database is correct and up to date...
+2025-09-29 16:37:50 | INFO     | Database up to date.
+2025-09-29 16:37:50 | SUCCESS  | Database ready.
+2025-09-29 16:37:50 | INFO     | root_path: 
+2025-09-29 16:37:50 | SUCCESS  | Running Codex v1.8.14
+2025-09-29 16:37:50 | SUCCESS  | BroadcastListener started.
+2025-09-29 16:37:51 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:37:52 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:37:53 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:37:55 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:37:55 | INFO     | LibrarianDaemon started all threads.
+2025-09-29 16:37:55 | SUCCESS  | LibrarianDaemon ready for tasks.
+2025-09-29 16:37:55 | INFO     | Started watching library /Users/I572166/Desktop/H/EDTH_HAMBURG/field-evidence/config/custom-covers with poll
+2025-09-29 16:37:55 | INFO     | Library /Users/I572166/Desktop/H/EDTH_HAMBURG/field-evidence/config/custom-covers waiting for manual poll.
+2025-09-29 16:37:55 | INFO     | Looking for search entries to update since the fracturing of the multiverse...
+2025-09-29 16:37:55 | INFO     | Looking for missing search entries to create...
+2025-09-29 16:37:55 | SUCCESS  | Search index found to be already synced in a moment.
+2025-09-29 16:39:47 | INFO     | Asking hypercorn to shut down gracefully. Could take 10 seconds...
+2025-09-29 16:39:47 | INFO     | BroadcastListener shutdown
+2025-09-29 16:39:47 | INFO     | LibrarianDaemon joined all threads.
+2025-09-29 16:39:47 | SUCCESS  | LibrarianDaemon finished.
+2025-09-29 16:39:48 | SUCCESS  | Goodbye.
+2025-09-29 16:39:50 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:39:50 | INFO     | Starting Codex v1.8.14
+2025-09-29 16:39:50 | INFO     | Ensuring database is correct and up to date...
+2025-09-29 16:39:50 | INFO     | Database up to date.
+2025-09-29 16:39:50 | SUCCESS  | Database ready.
+2025-09-29 16:39:50 | INFO     | root_path: 
+2025-09-29 16:39:50 | SUCCESS  | Running Codex v1.8.14
+2025-09-29 16:39:50 | SUCCESS  | BroadcastListener started.
+2025-09-29 16:39:51 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:39:52 | WARNING  | Cannot detect or read from CBR archives
+2025-09-29 16:39:52 | INFO     | Asking hypercorn to shut down gracefully. Could take 10 seconds...
+2025-09-29 16:39:52 | INFO     | BroadcastListener shutdown
+2025-09-29 16:39:53 | SUCCESS  | Goodbye.

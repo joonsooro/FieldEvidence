@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "field-evidence"
+version = "0.1.0"
+description = "FieldEvidence hackathon proof of concept"
+readme = "README.md"
+license = {text = "Proprietary"}
+authors = [{name = "FieldEvidence Team"}]
+requires-python = ">=3.10"
+dependencies = [
+  "opencv-python==4.9.0.80",
+  "numpy==1.26.4",
+  "protobuf==4.25.3",
+  "grpcio-tools==1.62.1",
+  "streamlit==1.32.2",
+  "pillow==10.3.0",
+  "sqlalchemy==2.0.29",
+  "aiosqlite==0.19.0",
+  "folium==0.15.1",
+  "pytest==8.1.1",
+  "rich==13.7.1"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
