@@ -35,8 +35,19 @@ synth1: $(VENV)/bin/python
 	  --sep_vx_range -5 5 --sep_vy_range -10 -4 --gravity 0.9 \
 	  --event_dist_ratio 1.1 --event_min_frames 3
 
-detect: $(VENV)/bin/python
-	@echo "Stub: implement launch detector entry point in src/detect and invoke it here."
+detect:
+	python -m src.detect.detect_launch --mode labels \
+	  --in data/synthetic --labels data/labels \
+	  --out out/events.jsonl --viz out/viz \
+	  --use_corr   $${USE_CORR:-0} \
+	  --ratio_hi   $${RATIO_HI:-0.85} \
+	  --ratio_slope_thr $${RATIO_SLOPE_THR:-0.004} \
+	  --k_fallback $${K_FALLBACK:-1} \
+	  --clip_out   $${CLIP_OUT:-out/snips} \
+	  --clip_margin_s $${CLIP_MARGIN_S:-2.0} \
+	  --clip_writer $${CLIP_WRITER:-ffmpeg} \
+	  --clip_select $${CLIP_SELECT:-first}
+
 
 emit: $(VENV)/bin/python
 	@echo "Stub: implement SALUTE microping emitter in src/infra and invoke it here."
