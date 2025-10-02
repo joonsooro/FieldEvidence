@@ -12,7 +12,7 @@ PROTO_DIR := $(dir $(PROTO_SRC))
 PROTO_OUT := src/wire
 PROTO_GEN := src/wire/salute_pb2.py src/wire/salute_pb2_grpc.py
 
-.PHONY: setup proto synth synth1 detect emit replay run eval test clean check
+.PHONY: setup proto synth synth1 detect emit cot replay run eval test clean check
 
 # ---------- Environment ----------
 setup: $(VENV)/bin/python
@@ -70,9 +70,17 @@ emit: $(VENV)/bin/python
 	  --out out/pings.bin \
 	  --size_report out/ping_sizes.json
 
+# ---------- Generate CoT XML from micropings ----------
+cot: $(VENV)/bin/python
+	$(RUN) -m scripts.emit_cot_from_pings \
+	  --pings out/pings.bin \
+	  --out_dir out/cot \
+	  --max $${MAX:-100}
+
 # ---------- App / eval / test ----------
 replay: $(VENV)/bin/python
-	@echo "Stub: implement queued microping replay pipeline and invoke it here."
+	$(RUN) scripts/replay_pipeline.py --pattern "$${PATTERN:-5:off,5:on}" \
+	  --limit $${LIMIT:-200} --budget_ms $${BUDGET_MS:-50}
 
 run: $(VENV)/bin/python
 	$(STREAMLIT) src/ui/app.py

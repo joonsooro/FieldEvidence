@@ -1,5 +1,6 @@
 # --- Core scientific / vision ---
 numpy==1.26.4
+pandas==2.2.3
 opencv-python==4.9.0.80
 opencv-contrib-python==4.9.0.80
 pillow==10.3.0
@@ -20,3 +21,6 @@ grpcio-tools==1.66.1
 
 # --- Testing ---
 pytest==8.1.1
+
+# --- Caching ---
+cachetools==5.3.3
