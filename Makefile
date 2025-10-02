@@ -5,26 +5,41 @@ PROJECT_ROOT := $(abspath .)
 ACTIVATE := source $(VENV)/bin/activate
 RUN := $(ACTIVATE) && PYTHONPATH=$(PROJECT_ROOT) python
 STREAMLIT := $(ACTIVATE) && PYTHONPATH=$(PROJECT_ROOT) streamlit run
+
+# Proto paths
 PROTO_SRC := src/wire/salute.proto
+PROTO_DIR := $(dir $(PROTO_SRC))
 PROTO_OUT := src/wire
+PROTO_GEN := src/wire/salute_pb2.py src/wire/salute_pb2_grpc.py
 
-.PHONY: setup synth detect proto emit replay run eval test
+.PHONY: setup proto synth synth1 detect emit replay run eval test clean check
 
+# ---------- Environment ----------
 setup: $(VENV)/bin/python
 	$(ACTIVATE) && pip install --upgrade pip setuptools wheel
 	$(ACTIVATE) && pip install -r requirements.txt
+	# Ensure grpc tools exist (safe if already installed)
+	$(ACTIVATE) && pip install -q grpcio grpcio-tools protobuf
 
 $(VENV)/bin/python:
 	$(PYTHON) -m venv $(VENV)
 
+# ---------- Protobuf ----------
 proto: $(VENV)/bin/python $(PROTO_SRC)
-	bash scripts/build_proto.sh
+	# Generate Python stubs using the venv's python
+	$(RUN) -m grpc_tools.protoc \
+	  -I $(PROTO_DIR) \
+	  --python_out=$(PROTO_OUT) \
+	  --grpc_python_out=$(PROTO_OUT) \
+	  $(PROTO_SRC)
+	@echo "✅ Protobuf generated into $(PROTO_OUT)"
 
+# ---------- Data synth / detect ----------
 synth: $(VENV)/bin/python
 	bash scripts/synthesize_demo.sh
 
 synth1: $(VENV)/bin/python
-	python -m src.synth.synthesize \
+	$(RUN) -m src.synth.synthesize \
 	  --carrier data/raw/carrier.mp4 \
 	  --sprite  data/sprites/parasite.png \
 	  --out_dir data/synthetic --labels_dir data/labels \
@@ -35,8 +50,8 @@ synth1: $(VENV)/bin/python
 	  --sep_vx_range -5 5 --sep_vy_range -10 -4 --gravity 0.9 \
 	  --event_dist_ratio 1.1 --event_min_frames 3
 
-detect:
-	python -m src.detect.detect_launch --mode labels \
+detect: $(VENV)/bin/python
+	$(RUN) -m src.detect.detect_launch --mode labels \
 	  --in data/synthetic --labels data/labels \
 	  --out out/events.jsonl --viz out/viz \
 	  --use_corr   $${USE_CORR:-0} \
@@ -48,10 +63,14 @@ detect:
 	  --clip_writer $${CLIP_WRITER:-ffmpeg} \
 	  --clip_select $${CLIP_SELECT:-first}
 
-
+# ---------- Wire emit ----------
 emit: $(VENV)/bin/python
-	@echo "Stub: implement SALUTE microping emitter in src/infra and invoke it here."
+	$(RUN) -m src.wire.emit_microping \
+	  --events out/events.jsonl \
+	  --out out/pings.bin \
+	  --size_report out/ping_sizes.json
 
+# ---------- App / eval / test ----------
 replay: $(VENV)/bin/python
 	@echo "Stub: implement queued microping replay pipeline and invoke it here."
 
@@ -63,3 +82,19 @@ eval: $(VENV)/bin/python
 
 test: $(VENV)/bin/python
 	$(RUN) -m pytest
+
+clean:
+	rm -f $(PROTO_OUT)/*_pb2.py $(PROTO_OUT)/*_pb2_grpc.py
+
+check: $(VENV)/bin/python proto emit
+	$(RUN) tools/check_pipeline.py
+
+$(PROTO_GEN): $(PROTO_SRC) | $(VENV)/bin/python
+	$(RUN) -m grpc_tools.protoc \
+	  -I $(dir $(PROTO_SRC)) \
+	  --python_out=$(dir $(PROTO_SRC)) \
+	  --grpc_python_out=$(dir $(PROTO_SRC)) \
+	  $(PROTO_SRC)
+	@echo "✅ Protobuf generated into $(dir $(PROTO_SRC))"
+
+proto: $(PROTO_GEN)
