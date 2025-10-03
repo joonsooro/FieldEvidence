@@ -4,6 +4,7 @@ import json
 import base64
 import time
 from pathlib import Path as _Path
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import folium
@@ -12,10 +13,12 @@ import xml.etree.ElementTree as ET
 
 from src.infra import replay_in_app
 
-MONITOR_PATH = _Path("out/monitor.jsonl")
-SNIPS_DIR = _Path("out/snips")
-VIZ_DIR = _Path("out/viz")
-COT_DIR = _Path("out/cot")
+# Absolute paths so UI reads what background threads write
+BASE_DIR = Path(__file__).resolve().parents[2]
+MONITOR_PATH = BASE_DIR / "out" / "monitor.jsonl"
+SNIPS_DIR = BASE_DIR / "out" / "snips"
+VIZ_DIR = BASE_DIR / "out" / "viz"
+COT_DIR = BASE_DIR / "out" / "cot"
 
 
 try:
@@ -189,31 +192,46 @@ def _render_map(events: List[Dict[str, object]], selected_codes: List[int]) -> s
 def main() -> None:
     st.set_page_config(page_title="Field Evidence Demo", layout="wide")
 
+    # ---- Background replay/toggler: start once ----
+    try:
+        if not replay_in_app.is_running():
+            replay_in_app.start_replay(pattern="5:off,5:on", limit=200, budget_ms=50)
+    except Exception:
+        pass
+
     # ---- Session state ----
     if "auto_disrupt" not in st.session_state:
+        # default auto disruption ON at first render
         st.session_state.auto_disrupt = True
-        # Default ON at first load
-        try:
-            replay_in_app.set_auto_disruption(True)
-        except Exception:
-            pass
-    if "refresh_s" not in st.session_state:
-        st.session_state.refresh_s = 1.0
+    try:
+        replay_in_app.set_auto_disruption(bool(st.session_state.auto_disrupt))
+    except Exception:
+        pass
 
     # ---- Sidebar controls ----
     st.sidebar.markdown("Synthetic only · Rule-based · Demo hash prefix · No real radios")
     st.sidebar.divider()
 
     # Comm disruption toggle (auto OFF/ON every 5s)
-    new_toggle = st.sidebar.toggle(
-        "Comm disruption (auto OFF/ON 5s)", value=st.session_state.auto_disrupt
-    )
-    if new_toggle != st.session_state.auto_disrupt:
-        st.session_state.auto_disrupt = new_toggle
+    st.sidebar.subheader("Comm disruption")
+    auto = st.sidebar.toggle("Auto OFF/ON every 5s", value=st.session_state.auto_disrupt)
+    if auto != st.session_state.auto_disrupt:
+        st.session_state.auto_disrupt = auto
         try:
-            replay_in_app.set_auto_disruption(new_toggle)
+            replay_in_app.set_auto_disruption(bool(auto))
         except Exception:
             pass
+
+    # Auto-refresh every 1s without blocking sleeps/reruns
+    st.sidebar.caption("Live refresh every 1s")
+    # --- Auto refresh ----
+    # Use a lightweight placeholder + JS reload for broad Streamlit compatibility
+    st_autorefresh = st.sidebar.empty()
+    st_autorefresh.write("")  # placeholder to keep layout stable
+    st.sidebar.markdown(
+        "<script>setTimeout(() => window.location.reload(), 1000);</script>",
+        unsafe_allow_html=True,
+    )
 
     # Visual status with colored values; labels in red (use latest monitor line)
     last = _load_monitor_last(MONITOR_PATH)
@@ -223,9 +241,7 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    st.session_state.refresh_s = st.sidebar.slider(
-        "Refresh every N seconds", min_value=0.5, max_value=10.0, value=float(st.session_state.refresh_s), step=0.5
-    )
+    # interval fixed via auto-refresh snippet above
 
     # ---- Title ----
     st.title("Field Evidence – Live Demo")
@@ -340,9 +356,7 @@ def main() -> None:
             df = _pd.DataFrame(table_rows)
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # ---- Auto refresh ----
-    time.sleep(float(st.session_state.refresh_s))
-    st.rerun()
+    # Auto-refresh handled by sidebar JS snippet; no blocking sleeps here.
 
 if __name__ == "__main__":
     main()
