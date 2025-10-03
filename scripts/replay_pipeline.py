@@ -10,8 +10,9 @@ if str(ROOT) not in sys.path:
 
 from src.infra.store_forward import enqueue, drain, depth, peek_oldest
 from src.infra.net_sim import set_online, is_online, send_http
+from src.infra import paths
 
-MON_PATH = Path("out/monitor.jsonl")
+MON_PATH = paths.MONITOR
 
 def read_varint(f):
     shift = 0; out = 0
@@ -48,7 +49,7 @@ def qtile(vals: List[float], q: float) -> float:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--events", default="out/pings.bin")
+    ap.add_argument("--events", default=str(paths.PINGS))
     ap.add_argument("--pattern", default="5:off,5:on")
     ap.add_argument("--limit", type=int, default=200)
     ap.add_argument("--budget_ms", type=int, default=50)
@@ -81,13 +82,11 @@ def main():
     set_online(pattern[0][1])
     print(f"[NET] {'ONLINE' if is_online() else 'offline'} for {phase_remaining}s")
 
-    # 직전 샘플 보존 버퍼 (루프 바깥에서만 초기화)
+    # 직전 샘플 보존 버퍼
     last_latencies: List[float] = []         # E2E latency (마지막 비어있지 않은 샘플)
     last_drain_latencies: List[float] = []   # drain-only latency (마지막 비어있지 않은 샘플)
-    # 누적 전송량 기준(음수 방지): total_expected - depth()
-    sent_prev = total_expected - depth()
-    if sent_prev < 0:
-        sent_prev = 0
+    # 누적 전송량 (이 프로세스에서 실제 전송량만 합산)
+    sent_tot_acc = 0
 
     MON_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -101,8 +100,8 @@ def main():
         now_ns = time.monotonic_ns()
 
         # 현재 틱의 측정값 컨테이너(항상 초기화)
-        lat_e2e: List[float] = []   # 이번 틱에 전송된 항목들의 E2E 지연(enqueue→send)
-        lat_drn: List[float] = []   # 이번 틱의 drain 루프 자체 시간(선택 구현)
+        lat_e2e: List[float] = []
+        lat_drn: List[float] = []
 
         # Phase handling
         if phase_remaining <= 0:
@@ -116,24 +115,21 @@ def main():
         # Non-blocking drain only when online
         sent_this_tick = 0
         if is_online():
-            snap = drain(send_fn=send_http, limit=args.limit, budget_ms=args.budget_ms, now_ns=now_ns)
-            # 키가 없으면 빈 리스트로 안전 처리
-            lat_e2e = list(snap.get("latency_ms", []))   # end-to-end (enqueue→send)
-            lat_drn = list(snap.get("drain_ms", []))     # drain 구간 측정(선택 구현)
+            snap = drain(
+                send_fn=send_http,
+                limit=args.limit,
+                budget_ms=args.budget_ms,
+                now_ns=now_ns,
+                require_online=is_online,
+            )
+            lat_e2e = list(snap.get("latency_ms", []))
+            lat_drn = list(snap.get("drain_ms", []))
             sent_this_tick = int(snap.get("sent", 0))
-            # 이번 틱에서 유효 샘플이 있으면 직전 샘플 버퍼 갱신
-            if lat_e2e:
-                last_latencies = lat_e2e
-            if lat_drn:
-                last_drain_latencies = lat_drn
 
         # Metrics
         d = depth()
-        sent_tot = total_expected - d
-        if sent_tot < 0:
-            sent_tot = 0
-        sent_1s = sent_tot - sent_prev
-        sent_prev = sent_tot
+        sent_tot_acc = max(0, sent_tot_acc + sent_this_tick)
+        sent_1s = sent_this_tick
 
         # Oldest pending age (monotonic)
         oldest_ms = None
@@ -142,18 +138,22 @@ def main():
             _, ts_ns, _ = pk[0]
             oldest_ms = int((now_ns - int(ts_ns)) / 1e6)
 
-        # Per-tick latency quantiles (E2E & drain-only)
+        # Per-tick latency quantiles (E2E & drain-only) with last non-empty fallback
         sample_e2e = lat_e2e if lat_e2e else last_latencies
         sample_drn = lat_drn if lat_drn else last_drain_latencies
-        def _q(v, q): return qtile(v, q) if v else 0.0
-        p50_e2e = _q(sample_e2e, 0.50)
-        p95_e2e = _q(sample_e2e, 0.95)
-        p50_drn = _q(sample_drn, 0.50)
-        p95_drn = _q(sample_drn, 0.95)
+        p50_e2e = qtile(sample_e2e, 0.50) if sample_e2e else 0.0
+        p95_e2e = qtile(sample_e2e, 0.95) if sample_e2e else 0.0
+        p50_drn = qtile(sample_drn, 0.50) if sample_drn else 0.0
+        p95_drn = qtile(sample_drn, 0.95) if sample_drn else 0.0
+
+        if lat_e2e:
+            last_latencies = lat_e2e
+        if lat_drn:
+            last_drain_latencies = lat_drn
 
         # Log and monitor snapshot
         print(
-            f"[TICK] depth={d:4d} sent_tot={sent_tot:4d} sent_1s={sent_1s:3d} "
+            f"[TICK] depth={d:4d} sent_tot={sent_tot_acc:4d} sent_1s={sent_1s:3d} "
             f"oldest_ms={oldest_ms} "
             f"p50_e2e={p50_e2e:.1f}ms p95_e2e={p95_e2e:.1f}ms "
             f"p50_drn={p50_drn:.2f}ms p95_drn={p95_drn:.2f}ms "
@@ -163,7 +163,7 @@ def main():
         snap_line = {
             "t_ns": now_ns,
             "depth": d,
-            "sent_tot": sent_tot,
+            "sent_tot": sent_tot_acc,
             "sent_1s": sent_1s,
             "oldest_ms": oldest_ms,
             "p50_e2e_ms": p50_e2e,

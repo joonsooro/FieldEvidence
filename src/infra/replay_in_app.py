@@ -10,6 +10,7 @@ from typing import Callable, Iterable, List, Optional, Tuple
 from src.infra import store_forward
 from src.infra.net_sim import is_online, send_http, set_online
 from src.infra.cot_encode import microping_to_cot_xml, write_cot_file
+from src.infra import paths
 from src.wire import salute_pb2
 from src.wire.codec import read_ld_stream
 from src.infra.snips import create_snip
@@ -19,10 +20,12 @@ from datetime import datetime, timezone
 import re
 
 
-PINGS_PATH = Path("out/pings.bin")
-MONITOR_PATH = Path("out/monitor.jsonl")
-COT_DIR = Path("out/cot")
+PINGS_PATH = paths.PINGS
+MONITOR_PATH = paths.MONITOR
+COT_DIR = paths.COT_DIR
 
+# Last time a monitor line was written (monotonic ns)
+_LAST_WRITE_NS: int = 0
 
 # --- Thread state ---
 _LOCK = threading.Lock()
@@ -36,6 +39,14 @@ _FLIP_COUNTDOWN = 5
 _TOGGLE_THREAD: Optional[threading.Thread] = None
 _TOGGLE_STOP = threading.Event()
 _AUTO = True
+
+# --- Heartbeat thread (1 Hz monitor snapshots) ---
+_HB_THREAD: Optional[threading.Thread] = None
+_HB_STOP = threading.Event()
+
+# Per-process counters for heartbeat
+_SENT_TOT: int = 0
+_SENT_1S: int = 0
 
 
 @dataclass
@@ -110,6 +121,7 @@ def _write_monitor_snapshot_basic(online: bool, lat_e2e: List[float] | None = No
         }
         with MONITOR_PATH.open("a", encoding="utf-8") as f:
             f.write(json.dumps(line) + "\n")
+        _mark_write()
     except Exception:
         # ignore any write errors to keep demo resilient
         pass
@@ -132,32 +144,66 @@ def stop_toggler() -> None:
 
 
 def _run_toggler() -> None:
-    """Flip OFF → ON every 5s while enabled; write minimal monitor snapshots.
-    When online, perform a short non-blocking drain tick so queue can advance.
+    """Flip OFF → ON every 5s while enabled, writing a flip snapshot each time.
+    Do not drain here; scheduler handles draining and metrics.
     """
     state = False  # start OFF then ON, repeat
     while not _TOGGLE_STOP.is_set() and _AUTO:
         try:
             set_online(state)
-            lat_e2e: List[float] = []
-            lat_drn: List[float] = []
-            if state:
-                try:
-                    snap = store_forward.drain(send_fn=send_http, limit=200, budget_ms=50)
-                    lat_e2e = list(snap.get("latency_ms", []))
-                    lat_drn = list(snap.get("drain_ms", []))
-                except Exception:
-                    pass
-            # write a lightweight monitor snapshot reflecting current state
-            _write_monitor_snapshot_basic(state, lat_e2e, lat_drn)
         except Exception:
             pass
-        # sleep 5s in responsive 0.1s increments
+        # Sleep ~5s in responsive 0.1s increments
         for _ in range(50):
             if _TOGGLE_STOP.is_set() or not _AUTO:
                 break
             time.sleep(0.1)
         state = not state
+
+
+def _run_heartbeat() -> None:
+    """Write a monitor snapshot every second, regardless of online state.
+    Uses per-process counters updated by the scheduler.
+    """
+    global _SENT_1S
+    next_t = time.monotonic()
+    while not _HB_STOP.is_set():
+        now = time.monotonic()
+        if now < next_t:
+            _HB_STOP.wait(max(0.0, next_t - now))
+            now = time.monotonic()
+        next_t += 1.0
+        now_ns = time.monotonic_ns()
+        try:
+            d = store_forward.depth()
+            oldest_ms: Optional[int] = None
+            pk = store_forward.peek_oldest(1)
+            if pk:
+                _, ts_ns, _ = pk[0]
+                oldest_ms = int((now_ns - int(ts_ns)) / 1e6)
+
+            # For simplicity, latency quantiles are 0 unless separately tracked
+            line = {
+                "t_ns": now_ns,
+                "depth": d,
+                "sent_tot": max(0, int(_SENT_TOT)),
+                "sent_1s": max(0, int(_SENT_1S)),
+                "oldest_ms": oldest_ms,
+                "p50_e2e_ms": 0.0,
+                "p95_e2e_ms": 0.0,
+                "p50_drain_ms": 0.0,
+                "p95_drain_ms": 0.0,
+                "online": is_online(),
+            }
+            MONITOR_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with MONITOR_PATH.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(line) + "\n")
+            _mark_write()
+        except Exception:
+            pass
+        finally:
+            # reset per-second counter
+            _SENT_1S = 0
 
 
 def _load_all_pings(path: Path) -> List[bytes]:
@@ -188,27 +234,17 @@ def _scheduler(cfg: _Config) -> None:
         # Step 1: enqueue all pings with a common enqueue timestamp
         payloads = _load_all_pings(PINGS_PATH)
         enq_t_ns = time.monotonic_ns()
-        existing0 = store_forward.depth()
         for pb in payloads:
             store_forward.enqueue(pb, ts_ns=enq_t_ns)
-        enq_total = len(payloads)
-        total_expected = existing0 + enq_total
-        if total_expected < 0:
-            total_expected = 0
-
-        # Initialize connectivity; toggler thread controls ON/OFF. Default to ONLINE.
-        set_online(True)
-
-        # Rolling measurements
-        last_e2e: List[float] = []
-        last_drn: List[float] = []
-        sent_prev = total_expected - store_forward.depth()
-        if sent_prev < 0:
-            sent_prev = 0
 
         # Ensure output dirs
         MONITOR_PATH.parent.mkdir(parents=True, exist_ok=True)
         COT_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Rolling samples and counters for accurate metrics
+        last_e2e: List[float] = []
+        last_drn: List[float] = []
+        sent_tot_acc = 0
 
         next_t = time.monotonic()
         while not _STOP.is_set():
@@ -219,45 +255,43 @@ def _scheduler(cfg: _Config) -> None:
             next_t += 1.0
             now_ns = time.monotonic_ns()
 
-            # Disruption handled by independent toggler; keep scheduler agnostic
-
-            # Drain non-blocking
+            # Drain only when online; collect latencies for this tick
             lat_e2e: List[float] = []
             lat_drn: List[float] = []
             sent_this_tick = 0
-            try:
-                snap = store_forward.drain(
-                    send_fn=_send_and_write_cot,
-                    limit=cfg.limit,
-                    budget_ms=cfg.budget_ms,
-                    now_ns=now_ns,
-                )
-                lat_e2e = list(snap.get("latency_ms", []))
-                lat_drn = list(snap.get("drain_ms", []))
-                sent_this_tick = int(snap.get("sent", 0))
-            except Exception:
-                # On any unexpected error, proceed and keep thread alive
-                pass
+            if is_online():
+                try:
+                    snap = store_forward.drain(
+                        send_fn=_send_and_write_cot,
+                        limit=cfg.limit,
+                        budget_ms=cfg.budget_ms,
+                        now_ns=now_ns,
+                        require_online=is_online,
+                    )
+                    lat_e2e = list(snap.get("latency_ms", []))
+                    lat_drn = list(snap.get("drain_ms", []))
+                    sent_this_tick = int(snap.get("sent", 0))
+                except Exception:
+                    sent_this_tick = 0
+                    lat_e2e = []
+                    lat_drn = []
+            else:
+                sent_this_tick = 0
+                lat_e2e = []
+                lat_drn = []
 
-            if lat_e2e:
-                last_e2e = lat_e2e
-            if lat_drn:
-                last_drn = lat_drn
+            # Accumulate counters safely
+            sent_tot_acc = max(0, sent_tot_acc + sent_this_tick)
+            sent_1s = sent_this_tick
 
-            # Metrics
-            d = store_forward.depth()
-            sent_tot = total_expected - d
-            if sent_tot < 0:
-                sent_tot = 0
-            sent_1s = sent_tot - sent_prev
-            sent_prev = sent_tot
-
+            # Oldest pending age
             oldest_ms: Optional[int] = None
             pk = store_forward.peek_oldest(1)
             if pk:
                 _, ts_ns, _ = pk[0]
                 oldest_ms = int((now_ns - int(ts_ns)) / 1e6)
 
+            # Quantiles (fallback to last non-empty)
             sample_e2e = lat_e2e if lat_e2e else last_e2e
             sample_drn = lat_drn if lat_drn else last_drn
             p50_e2e = _qtile(sample_e2e, 0.50)
@@ -265,10 +299,17 @@ def _scheduler(cfg: _Config) -> None:
             p50_drn = _qtile(sample_drn, 0.50)
             p95_drn = _qtile(sample_drn, 0.95)
 
+            # Update last samples if any were recorded this tick
+            if lat_e2e:
+                last_e2e = lat_e2e
+            if lat_drn:
+                last_drn = lat_drn
+
+            # Write 1 Hz monitor snapshot
             line = {
                 "t_ns": now_ns,
-                "depth": d,
-                "sent_tot": sent_tot,
+                "depth": store_forward.depth(),
+                "sent_tot": sent_tot_acc,
                 "sent_1s": sent_1s,
                 "oldest_ms": oldest_ms,
                 "p50_e2e_ms": p50_e2e,
@@ -280,11 +321,9 @@ def _scheduler(cfg: _Config) -> None:
             try:
                 with MONITOR_PATH.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(line) + "\n")
+                _mark_write()
             except Exception:
-                # ignore write errors to keep demo running
                 pass
-
-            # no pattern-based countdown; handled above
 
     finally:
         with _LOCK:
@@ -314,7 +353,7 @@ def _parse_event_time_iso8601(xml_path: Path) -> Optional[float]:
 
 
 def _pick_source_video() -> Optional[Path]:
-    viz = Path("out/viz")
+    viz = paths.VIZ_DIR
     best = viz / "clip_best.mp4"
     try:
         if best.exists():
@@ -358,9 +397,9 @@ def _next_seq_number_under(dir_path: Path) -> int:
 def _make_snip_from_latest(mp4: Path) -> Optional[Path]:
     fps, total, dur_s = _video_props(mp4)
     center_s = max(2.1, dur_s - 0.5)
-    seq = _next_seq_number_under(Path("out/snips"))
+    seq = _next_seq_number_under(paths.SNIPS_DIR)
     frame_tag = int(center_s * fps)
-    outp = Path("out/snips") / f"clip_{seq:02d}_f{frame_tag:04d}.mp4"
+    outp = paths.SNIPS_DIR / f"clip_{seq:02d}_f{frame_tag:04d}.mp4"
     try:
         return create_snip(mp4, center_s, 2.0, 2.0, outp)
     except Exception:
@@ -405,31 +444,26 @@ def _cot_watcher() -> None:
 
 
 def start_replay(pattern: str = "5:off,5:on", limit: int = 200, budget_ms: int = 50) -> None:
-    """
-    Start the background replay thread if not already running.
-
-    - Reads varint-framed pings from out/pings.bin and enqueues them
-    - Every second, toggles network state per pattern when auto-disruption is enabled
-    - Drains the queue non-blocking and writes monitor snapshots to out/monitor.jsonl
-    - Writes a CoT XML file to out/cot/ for each payload successfully sent
-    """
     global _THREAD, _STOP, _AUTO_ENABLED
     with _LOCK:
         if _THREAD is not None and _THREAD.is_alive():
             return
+        # --- clear old monitor lines for a clean demo run ---
+        try:
+            MONITOR_PATH.parent.mkdir(parents=True, exist_ok=True)
+            MONITOR_PATH.write_text("", encoding="utf-8")
+        except Exception:
+            pass
+        # ----------------------------------------------------
         cfg = _Config(pattern=_parse_pattern(pattern), limit=int(limit), budget_ms=int(budget_ms))
         _STOP.clear()
-        # legacy flag retained for compatibility; independent toggler controls actual comm flips
         _AUTO_ENABLED = True
-        # Start scheduler
         th = threading.Thread(target=_scheduler, args=(cfg,), daemon=True)
         _THREAD = th
         th.start()
-        # Start CoT watcher
         cot_th = threading.Thread(target=_cot_watcher, daemon=True)
         _COT_THREAD = cot_th
         cot_th.start()
-
 
 def stop_replay() -> None:
     """Signal the background replay thread to stop and wait for it to exit."""
@@ -449,6 +483,7 @@ def stop_replay() -> None:
         cot_th.join(timeout=1.0)
     with _LOCK:
         _COT_THREAD = None
+    # no separate heartbeat to stop
 
 
 def is_running() -> bool:
@@ -480,10 +515,55 @@ def get_auto_disruption() -> bool:
     return bool(_AUTO_ENABLED)
 
 
+def ensure_replay_running(limit: int = 200, budget_ms: int = 50) -> None:
+    """Start the scheduler if not alive, with standard defaults."""
+    if not is_running():
+        start_replay(pattern="5:off,5:on", limit=limit, budget_ms=budget_ms)
+    else:
+        pass
+
+
+def _toggler_alive() -> bool:
+    th = _TOGGLE_THREAD
+    return bool(th and th.is_alive())
+
+
+def ensure_toggler_running(auto: bool) -> None:
+    """Ensure toggler state matches `auto` and write a snapshot when disabling."""
+    global _AUTO
+    _AUTO = bool(auto)
+    if _AUTO:
+        if not _toggler_alive():
+            start_toggler()
+    else:
+        stop_toggler()
+        try:
+            set_online(True)
+            _write_monitor_snapshot_basic(True)
+        except Exception:
+            pass
+
+
+def _mark_write() -> None:
+    global _LAST_WRITE_NS
+    try:
+        _LAST_WRITE_NS = time.monotonic_ns()
+    except Exception:
+        pass
+
+
+def start_heartbeat() -> None:  # legacy no-op
+    return None
+
+
+def stop_heartbeat() -> None:  # legacy no-op
+    return None
+
+
 # --------- Auto snip creation hook ---------
 import os
 
-_SNIPS_DIR = Path("out/snips")
+_SNIPS_DIR = paths.SNIPS_DIR
 _SNIPS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -538,7 +618,7 @@ def on_event_emitted(ev: dict) -> None:
 def _guess_latest_video() -> Optional[str]:
     # Prefer out/viz/*.mp4, fallback to any *.mp4 under out/
     try:
-        for folder in ["out/snips", "out/viz", "out"]:
+        for folder in [str(paths.SNIPS_DIR), str(paths.VIZ_DIR), str(paths.OUT)]:
             cand = list(Path(folder).glob("*.mp4"))
             if cand:
                 cand = sorted(cand, key=lambda p: p.stat().st_mtime, reverse=True)

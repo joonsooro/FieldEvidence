@@ -1,7 +1,8 @@
 from __future__ import annotations
 from pathlib import Path
+from src.infra import paths
 
-_SENT_FILE = Path("out/sent.bin")
+_SENT_FILE = paths.SENT_BIN
 _ONLINE: bool = False
 
 def set_online(flag: bool) -> None:

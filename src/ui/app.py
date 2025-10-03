@@ -4,7 +4,6 @@ import json
 import base64
 import time
 from pathlib import Path as _Path
-from pathlib import Path
 from typing import Dict, List, Optional
 
 import folium
@@ -12,13 +11,13 @@ import streamlit as st
 import xml.etree.ElementTree as ET
 
 from src.infra import replay_in_app
+from src.infra import paths
 
-# Absolute paths so UI reads what background threads write
-BASE_DIR = Path(__file__).resolve().parents[2]
-MONITOR_PATH = BASE_DIR / "out" / "monitor.jsonl"
-SNIPS_DIR = BASE_DIR / "out" / "snips"
-VIZ_DIR = BASE_DIR / "out" / "viz"
-COT_DIR = BASE_DIR / "out" / "cot"
+# Use shared absolute paths so CLI and UI write/read the same files
+MONITOR_PATH = paths.MONITOR
+SNIPS_DIR = paths.SNIPS_DIR
+VIZ_DIR = paths.VIZ_DIR
+COT_DIR = paths.COT_DIR
 
 
 try:
@@ -29,18 +28,34 @@ except Exception as e:  # pragma: no cover - optional dependency
     _PD_ERR = e
 
 
-def _load_monitor_tail(path: _Path, max_lines: int = 2000):
+def _load_monitor(path: _Path, max_lines: int = 1000):
+    snaps: List[Dict[str, object]] = []
     if not path.exists():
+        return snaps
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    snaps.append(json.loads(line))
+                except Exception:
+                    continue
+    except FileNotFoundError:
         return []
-    with path.open("r") as f:
-        lines = [ln.strip() for ln in f if ln.strip()]
-    out = []
-    for ln in lines[-max_lines:]:
+    # keep only last max_lines
+    snaps = snaps[-max_lines:]
+    # sort by t_ns and de-duplicate by t_ns
+    keyed: Dict[int, Dict[str, object]] = {}
+    for s in snaps:
         try:
-            out.append(json.loads(ln))
+            t = int(s.get("t_ns", 0))
         except Exception:
-            pass
-    return out
+            continue
+        keyed[t] = s
+    ordered = [keyed[k] for k in sorted(keyed.keys())]
+    return ordered
 
 
 def _load_monitor_last(path: _Path) -> Dict[str, object] | None:
@@ -192,19 +207,14 @@ def _render_map(events: List[Dict[str, object]], selected_codes: List[int]) -> s
 def main() -> None:
     st.set_page_config(page_title="Field Evidence Demo", layout="wide")
 
-    # ---- Background replay/toggler: start once ----
-    try:
-        if not replay_in_app.is_running():
-            replay_in_app.start_replay(pattern="5:off,5:on", limit=200, budget_ms=50)
-    except Exception:
-        pass
-
-    # ---- Session state ----
+    # ---- Session state & background threads ----
     if "auto_disrupt" not in st.session_state:
         # default auto disruption ON at first render
         st.session_state.auto_disrupt = True
+    # Ensure background scheduler/toggler are running per requested state
     try:
-        replay_in_app.set_auto_disruption(bool(st.session_state.auto_disrupt))
+        replay_in_app.ensure_toggler_running(st.session_state.auto_disrupt)
+        replay_in_app.ensure_replay_running(limit=200, budget_ms=50)
     except Exception:
         pass
 
@@ -214,34 +224,32 @@ def main() -> None:
 
     # Comm disruption toggle (auto OFF/ON every 5s)
     st.sidebar.subheader("Comm disruption")
-    auto = st.sidebar.toggle("Auto OFF/ON every 5s", value=st.session_state.auto_disrupt)
+    auto = st.sidebar.toggle("Comm Disruption", value=st.session_state.auto_disrupt)
     if auto != st.session_state.auto_disrupt:
         st.session_state.auto_disrupt = auto
         try:
-            replay_in_app.set_auto_disruption(bool(auto))
+            replay_in_app.ensure_toggler_running(bool(auto))
         except Exception:
             pass
 
-    # Auto-refresh every 1s without blocking sleeps/reruns
-    st.sidebar.caption("Live refresh every 1s")
-    # --- Auto refresh ----
-    # Use a lightweight placeholder + JS reload for broad Streamlit compatibility
-    st_autorefresh = st.sidebar.empty()
-    st_autorefresh.write("")  # placeholder to keep layout stable
-    st.sidebar.markdown(
-        "<script>setTimeout(() => window.location.reload(), 1000);</script>",
-        unsafe_allow_html=True,
-    )
+    # Optional: reset monitor for a clean session
+    if st.sidebar.button("Reset monitor"):
+        try:
+            if MONITOR_PATH.exists():
+                MONITOR_PATH.write_text("", encoding="utf-8")
+        except Exception:
+            pass
 
-    # Visual status with colored values; labels in red (use latest monitor line)
-    last = _load_monitor_last(MONITOR_PATH)
+    # Visual status based on latest snapshot
+    last = _load_monitor(MONITOR_PATH, max_lines=1)
+    last = last[-1] if last else None
     online_flag = bool(last.get("online")) if last else False
     st.sidebar.markdown(
         f"Status: {_status_badge(online_flag)}",
         unsafe_allow_html=True,
     )
 
-    # interval fixed via auto-refresh snippet above
+    # Fixed 1s refresh cadence to match 1 Hz monitor
 
     # ---- Title ----
     st.title("Field Evidence – Live Demo")
@@ -324,7 +332,7 @@ def main() -> None:
 
     # ---- Queue Monitor & Stats ----
     st.subheader("Queue Monitor & Stats")
-    snaps = _load_monitor_tail(MONITOR_PATH)
+    snaps = _load_monitor(MONITOR_PATH, max_lines=1000)
     if not snaps:
         st.info("No monitor data yet — start replay to generate out/monitor.jsonl.")
     else:
@@ -356,7 +364,9 @@ def main() -> None:
             df = _pd.DataFrame(table_rows)
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # Auto-refresh handled by sidebar JS snippet; no blocking sleeps here.
+    # Keep steady 1 Hz refresh without extra UI controls
+    time.sleep(1.0)
+    st.rerun()
 
 if __name__ == "__main__":
     main()
