@@ -136,7 +136,9 @@ def _render_map(events: List[Dict[str, object]], selected_codes: List[int]) -> s
     else:
         clat, clon = 0.0, 0.0
 
-    m = folium.Map(location=[clat, clon], zoom_start=6)
+    # Zoom closer when we have events (~12); fallback to 6
+    zoom_start = 12 if pts else 6
+    m = folium.Map(location=[clat, clon], zoom_start=zoom_start)
 
     for e in events:
         ec = int(e.get("event_code", 0))
@@ -173,8 +175,6 @@ def main() -> None:
     if "replay_attempted" not in st.session_state:
         st.session_state.replay_attempted = False
 
-    if "last_refresh_t" not in st.session_state:
-        st.session_state.last_refresh_t = time.time()
     # ---- Sidebar controls ----
     st.sidebar.markdown("Synthetic only · Rule-based · Demo hash prefix · No real radios")
     st.sidebar.divider()
@@ -194,20 +194,31 @@ def main() -> None:
             st.error(f"Failed to stop replay: {e}")
 
     st.session_state.auto_disrupt = st.sidebar.toggle(
-        "Comm disruption (auto ON/OFF 5s)", value=st.session_state.auto_disrupt
+        "Comm Disruption", value=st.session_state.auto_disrupt
     )
-    # Apply auto disruption toggle live
+    # Apply auto disruption toggle live; when OFF, force system ONLINE
     try:
         replay_in_app.set_auto_disruption(st.session_state.auto_disrupt)
+        if not st.session_state.auto_disrupt:
+            set_online(True)
     except Exception:
         pass
 
-    c2, c3 = st.sidebar.columns(2)
-    if c2.button("Go ONLINE", type="primary", use_container_width=True):
-        set_online(True)
-    if c3.button("Go OFFLINE", use_container_width=True):
-        set_online(False)
-    st.sidebar.caption(f"Status: {'ONLINE' if is_online() else 'offline'}  •  Replay: {'running' if replay_in_app.is_running() else 'stopped'}")
+    # Visual status with colored values; labels in red
+    online_now = is_online()
+    status_color = "green" if online_now else "red"
+    replay_running = replay_in_app.is_running()
+    replay_color = "green" if replay_running else "red"
+    st.sidebar.markdown(
+        f"<span style='color:#d22;font-weight:600;'>Status</span>: "
+        f"<span style='color:{status_color};font-weight:700;'>{'ONLINE' if online_now else 'OFFLINE'}</span>",
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown(
+        f"<span style='color:#d22;font-weight:600;'>Replay</span>: "
+        f"<span style='color:{replay_color};font-weight:700;'>{'running' if replay_running else 'stopped'}</span>",
+        unsafe_allow_html=True,
+    )
 
     st.session_state.refresh_s = st.sidebar.slider(
         "Refresh every N seconds", min_value=0.5, max_value=10.0, value=float(st.session_state.refresh_s), step=0.5
@@ -219,17 +230,21 @@ def main() -> None:
     # ---- Video Panel ----
     st.subheader("Video")
     viz_dir = _Path("out/viz")
-    latest_mp4: Optional[_Path] = None
+    chosen_mp4: Optional[_Path] = None
     try:
-        if viz_dir.exists():
+        best = viz_dir / "clip_best.mp4"
+        if best.exists():
+            chosen_mp4 = best
+        elif viz_dir.exists():
             vids = sorted(viz_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-            latest_mp4 = vids[0] if vids else None
+            chosen_mp4 = vids[0] if vids else None
     except Exception:
-        latest_mp4 = None
-    if latest_mp4 is not None:
-        st.video(str(latest_mp4))
+        chosen_mp4 = None
+    if chosen_mp4 is not None:
+        st.video(str(chosen_mp4))
+        st.caption("Video with the highest reliability")
     else:
-        st.info("No viz found yet — generate clips into out/viz/*.mp4 to display here.")
+        st.info("No viz found yet — place clip_best.mp4 or any *.mp4 under out/viz/.")
 
     # ---- Events Panel ----
     st.subheader("Events")
@@ -275,7 +290,8 @@ def main() -> None:
     else:
         last = snaps[-1]
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Online", "True" if last.get("online") else "False")
+        # Use actual online/offline state
+        c1.metric("Online", "True" if online_now else "False")
         c2.metric("Queue depth", int(last.get("depth", 0)))
         c3.metric("sent/s", int(last.get("sent_1s", 0)))
         c4.metric("p50 e2e (ms)", f"{float(last.get('p50_e2e_ms', 0.0)):.0f}")
@@ -301,24 +317,6 @@ def main() -> None:
     # ---- Auto refresh ----
     time.sleep(float(st.session_state.refresh_s))
     st.rerun()
-
-    # Stats
-    st.subheader("Stats")
-    depth_now = rows[-1].get("depth") if rows else None
-    sent_tot = rows[-1].get("sent_tot") if rows else None
-    last_event_time = events[-1].get("time") if events else None
-    st.write(
-        f"Queue depth now: {depth_now if depth_now is not None else '-'}  |  "
-        f"Sent total: {sent_tot if sent_tot is not None else '-'}  |  "
-        f"Pings in out/cot/: {len(events)}  |  "
-        f"Last event: {last_event_time if last_event_time else '-'}"
-    )
-
-    interval = float(st.session_state.get("refresh_s", 1.0))
-    now = time.time()
-    if now - st.session_state.last_refresh_t >= interval:
-        st.session_state.last_refresh_t = now
-        st.rerun()
 
 if __name__ == "__main__":
     main()
