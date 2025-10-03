@@ -1,25 +1,25 @@
 from __future__ import annotations
 
-import _json
+import json
 import time
-from dataclasses import dataclass
 from pathlib import Path as _Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import folium
 import streamlit as st
 import xml.etree.ElementTree as ET
 
 from src.infra.net_sim import set_online, is_online
+from src.infra import replay_in_app
 
 MONITOR_PATH = _Path("out/monitor.jsonl")
 COT_DIR = _Path("out/cot")
 
 
 try:
-    import pandas as _pd
+    import pandas as _pd  # type: ignore
     _PD_ERR = None
-except Exception as e:
+except Exception as e:  # pragma: no cover - optional dependency
     _pd = None
     _PD_ERR = e
 
@@ -33,7 +33,7 @@ def _load_monitor(path: _Path, max_lines: int = 2000):
                 if not line:
                     continue
                 try:
-                    snaps.append(_json.loads(line))
+                    snaps.append(json.loads(line))
                 except Exception:
                     pass
     except FileNotFoundError:
@@ -45,7 +45,7 @@ def _color_for_event_code(code: int) -> str:
     return {1: "red", 2: "orange", 3: "blue"}.get(int(code), "gray")
 
 
-def _parse_cot_file(path: Path) -> Optional[Dict[str, object]]:
+def _parse_cot_file(path: _Path) -> Optional[Dict[str, object]]:
     try:
         txt = path.read_text(encoding="utf-8")
         root = ET.fromstring(txt)
@@ -76,8 +76,18 @@ def _parse_cot_file(path: Path) -> Optional[Dict[str, object]]:
                         break
         event_code = int(ec) if ec is not None else 0
 
+        # Derive uid_hex if uid like "uid_<int>"
+        uid_hex = None
+        if uid.startswith("uid_"):
+            try:
+                uid_int = int(uid.split("_", 1)[1])
+                uid_hex = hex(uid_int)
+            except Exception:
+                uid_hex = None
+
         return {
             "uid": uid,
+            "uid_hex": uid_hex,
             "time": t,
             "lat": lat,
             "lon": lon,
@@ -88,7 +98,7 @@ def _parse_cot_file(path: Path) -> Optional[Dict[str, object]]:
         return None
 
 
-def _load_cot_events(dir_path: Path) -> List[Dict[str, object]]:
+def _load_cot_events(dir_path: _Path) -> List[Dict[str, object]]:
     events: List[Dict[str, object]] = []
     if not dir_path.exists():
         return events
@@ -99,7 +109,7 @@ def _load_cot_events(dir_path: Path) -> List[Dict[str, object]]:
     return events
 
 
-def _tail_jsonl(path: Path, n: int = 100) -> List[Dict[str, object]]:
+def _tail_jsonl(path: _Path, n: int = 100) -> List[Dict[str, object]]:
     if not path.exists():
         return []
     try:
@@ -153,71 +163,144 @@ def _render_map(events: List[Dict[str, object]], selected_codes: List[int]) -> s
 
 
 def main() -> None:
-    st.set_page_config(page_title="CoT Map + Queue Monitor", layout="wide")
+    st.set_page_config(page_title="Field Evidence Demo", layout="wide")
 
-    # Sidebar: network controls
-    st.sidebar.header("Network")
-    c1, c2 = st.sidebar.columns(2)
-    if c1.button("Online"):
+    # ---- Session state ----
+    if "auto_disrupt" not in st.session_state:
+        st.session_state.auto_disrupt = True
+    if "refresh_s" not in st.session_state:
+        st.session_state.refresh_s = 1.0
+    if "replay_attempted" not in st.session_state:
+        st.session_state.replay_attempted = False
+
+    if "last_refresh_t" not in st.session_state:
+        st.session_state.last_refresh_t = time.time()
+    # ---- Sidebar controls ----
+    st.sidebar.markdown("Synthetic only · Rule-based · Demo hash prefix · No real radios")
+    st.sidebar.divider()
+
+    c0, c1 = st.sidebar.columns(2)
+    if c0.button("Start Replay", type="primary", use_container_width=True):
+        try:
+            replay_in_app.start_replay(pattern="5:off,5:on", limit=200, budget_ms=50)
+            st.session_state.replay_attempted = True
+        except Exception as e:
+            st.error(f"Failed to start replay: {e}")
+
+    if c1.button("Stop Replay", use_container_width=True):
+        try:
+            replay_in_app.stop_replay()
+        except Exception as e:
+            st.error(f"Failed to stop replay: {e}")
+
+    st.session_state.auto_disrupt = st.sidebar.toggle(
+        "Comm disruption (auto ON/OFF 5s)", value=st.session_state.auto_disrupt
+    )
+    # Apply auto disruption toggle live
+    try:
+        replay_in_app.set_auto_disruption(st.session_state.auto_disrupt)
+    except Exception:
+        pass
+
+    c2, c3 = st.sidebar.columns(2)
+    if c2.button("Go ONLINE", type="primary", use_container_width=True):
         set_online(True)
-    if c2.button("Offline"):
+    if c3.button("Go OFFLINE", use_container_width=True):
         set_online(False)
-    st.sidebar.write(f"Status: {'ONLINE' if is_online() else 'offline'}")
+    st.sidebar.caption(f"Status: {'ONLINE' if is_online() else 'offline'}  •  Replay: {'running' if replay_in_app.is_running() else 'stopped'}")
 
-    refresh_sec = st.sidebar.slider("Refresh interval (s)", min_value=0.5, max_value=10.0, value=1.0, step=0.5)
+    st.session_state.refresh_s = st.sidebar.slider(
+        "Refresh every N seconds", min_value=0.5, max_value=10.0, value=float(st.session_state.refresh_s), step=0.5
+    )
 
-    # Load CoT events and unique event codes
+    # ---- Title ----
+    st.title("Field Evidence – Live Demo")
+
+    # ---- Video Panel ----
+    st.subheader("Video")
+    viz_dir = _Path("out/viz")
+    latest_mp4: Optional[_Path] = None
+    try:
+        if viz_dir.exists():
+            vids = sorted(viz_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+            latest_mp4 = vids[0] if vids else None
+    except Exception:
+        latest_mp4 = None
+    if latest_mp4 is not None:
+        st.video(str(latest_mp4))
+    else:
+        st.info("No viz found yet — generate clips into out/viz/*.mp4 to display here.")
+
+    # ---- Events Panel ----
+    st.subheader("Events")
     events = _load_cot_events(COT_DIR)
-    codes_present = sorted({int(e.get("event_code", 0)) for e in events})
-    selected_codes = st.sidebar.multiselect("Filter: event_code", options=codes_present, default=codes_present)
+    if not events:
+        st.info("No CoT events yet — start replay to populate out/cot/.")
+    else:
+        # Show latest ~200
+        ev_show = events[-200:]
+        rows = [
+            {
+                "time": e.get("time"),
+                "uid(hex)": e.get("uid_hex") or e.get("uid"),
+                "lat": e.get("lat"),
+                "lon": e.get("lon"),
+                "event_code": e.get("event_code"),
+            }
+            for e in ev_show
+        ]
+        if _pd is None:
+            st.warning(f"Pandas unavailable ({_PD_ERR}). Showing raw entries.")
+            st.write(rows)
+        else:
+            df = _pd.DataFrame(rows)
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
-    st.title("TAK CoT Map (Demo)")
-
-    # Map view
-    map_html = _render_map(events, selected_codes)
+    # ---- Map Panel ----
     st.subheader("Map")
+    # Build simple palette by event_code
+    # Allow filtering via a small multiselect when events exist
+    codes_present = sorted({int(e.get("event_code", 0)) for e in events})
+    selected_codes: List[int] = []
+    if codes_present:
+        selected_codes = st.multiselect("Filter event_code", options=codes_present, default=codes_present)
+    map_html = _render_map(events, selected_codes)
     st.components.v1.html(map_html, height=520, scrolling=False)
 
-    st.subheader("Queue Monitor")
-    # ---- Queue Monitor (safe, works even without pandas) ----
+    # ---- Queue Monitor & Stats ----
+    st.subheader("Queue Monitor & Stats")
     snaps = _load_monitor(MONITOR_PATH)
     if not snaps:
-        st.info("No monitor data yet — run the replay to generate `out/monitor.jsonl`.")
+        st.info("No monitor data yet — start replay to generate out/monitor.jsonl.")
     else:
         last = snaps[-1]
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Online", "True" if last.get("online") else "False")
         c2.metric("Queue depth", int(last.get("depth", 0)))
         c3.metric("sent/s", int(last.get("sent_1s", 0)))
-        c4.metric("p50 e2e (ms)", f'{float(last.get("p50_e2e_ms", 0.0)):.0f}')
+        c4.metric("p50 e2e (ms)", f"{float(last.get('p50_e2e_ms', 0.0)):.0f}")
 
-        proj = [{
-            "t_ns": s.get("t_ns"),
-            "depth": s.get("depth"),
-            "sent_tot": s.get("sent_tot"),
-            "sent_1s": s.get("sent_1s"),
-            "p50_e2e_ms": s.get("p50_e2e_ms"),
-            "p95_e2e_ms": s.get("p95_e2e_ms"),
-            "online": s.get("online"),
-        } for s in snaps][-200:]
-
+        cols = [
+            "t_ns",
+            "depth",
+            "sent_tot",
+            "sent_1s",
+            "p50_e2e_ms",
+            "p95_e2e_ms",
+            "p50_drain_ms",
+            "p95_drain_ms",
+            "online",
+        ]
+        table_rows = [{k: s.get(k) for k in cols} for s in snaps[-200:]]
         if _pd is None:
-            st.warning(f"Pandas unavailable ({_PD_ERR}). Showing raw records.")
-            st.write(proj)
+            st.write(table_rows)
         else:
-            df = _pd.DataFrame(proj)
+            df = _pd.DataFrame(table_rows)
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-        
-    rows = _tail_jsonl(MONITOR_PATH, n=100)
-    if rows:
-        # Display selected columns in a compact table
-        cols = ["t_ns", "depth", "sent_tot", "sent_1s", "p50_e2e_ms", "p50_drain_ms", "online"]
-        # Gracefully project available keys
-        proj = [{k: r.get(k) for k in cols} for r in rows]
-        st.dataframe(proj, use_container_width=True, hide_index=True)
-    else:
-        st.write("No monitor data yet. Run replay to populate out/monitor.jsonl.")
+    # ---- Auto refresh ----
+    time.sleep(float(st.session_state.refresh_s))
+    st.rerun()
 
     # Stats
     st.subheader("Stats")
@@ -231,11 +314,11 @@ def main() -> None:
         f"Last event: {last_event_time if last_event_time else '-'}"
     )
 
-    # Auto-refresh
-    time.sleep(max(0.1, float(refresh_sec)))
-    st.experimental_rerun()
-
+    interval = float(st.session_state.get("refresh_s", 1.0))
+    now = time.time()
+    if now - st.session_state.last_refresh_t >= interval:
+        st.session_state.last_refresh_t = now
+        st.rerun()
 
 if __name__ == "__main__":
     main()
-
