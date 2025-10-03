@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import time
 from pathlib import Path as _Path
 from typing import Dict, List, Optional
@@ -9,10 +10,11 @@ import folium
 import streamlit as st
 import xml.etree.ElementTree as ET
 
-from src.infra.net_sim import set_online, is_online
 from src.infra import replay_in_app
 
 MONITOR_PATH = _Path("out/monitor.jsonl")
+SNIPS_DIR = _Path("out/snips")
+VIZ_DIR = _Path("out/viz")
 COT_DIR = _Path("out/cot")
 
 
@@ -24,21 +26,41 @@ except Exception as e:  # pragma: no cover - optional dependency
     _PD_ERR = e
 
 
-def _load_monitor(path: _Path, max_lines: int = 2000):
-    snaps = []
-    try:
-        with path.open("r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    snaps.append(json.loads(line))
-                except Exception:
-                    pass
-    except FileNotFoundError:
+def _load_monitor_tail(path: _Path, max_lines: int = 2000):
+    if not path.exists():
         return []
-    return snaps[-max_lines:]
+    with path.open("r") as f:
+        lines = [ln.strip() for ln in f if ln.strip()]
+    out = []
+    for ln in lines[-max_lines:]:
+        try:
+            out.append(json.loads(ln))
+        except Exception:
+            pass
+    return out
+
+
+def _load_monitor_last(path: _Path) -> Dict[str, object] | None:
+    if not path.exists():
+        return None
+    try:
+        *_, last = path.read_text(encoding="utf-8").splitlines()
+        return json.loads(last)
+    except Exception:
+        return None
+
+
+def _status_badge(online: bool) -> str:
+    color = "#16a34a" if online else "#dc2626"
+    text = "Online" if online else "Offline"
+    return f"<span style='color:{color};font-weight:700'>{text}</span>"
+
+
+def _latest_snip() -> Optional[_Path]:
+    if not SNIPS_DIR.exists():
+        return None
+    vids = sorted(SNIPS_DIR.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return vids[0] if vids else None
 
 
 def _color_for_event_code(code: int) -> str:
@@ -170,53 +192,34 @@ def main() -> None:
     # ---- Session state ----
     if "auto_disrupt" not in st.session_state:
         st.session_state.auto_disrupt = True
+        # Default ON at first load
+        try:
+            replay_in_app.set_auto_disruption(True)
+        except Exception:
+            pass
     if "refresh_s" not in st.session_state:
         st.session_state.refresh_s = 1.0
-    if "replay_attempted" not in st.session_state:
-        st.session_state.replay_attempted = False
 
     # ---- Sidebar controls ----
     st.sidebar.markdown("Synthetic only · Rule-based · Demo hash prefix · No real radios")
     st.sidebar.divider()
 
-    c0, c1 = st.sidebar.columns(2)
-    if c0.button("Start Replay", type="primary", use_container_width=True):
-        try:
-            replay_in_app.start_replay(pattern="5:off,5:on", limit=200, budget_ms=50)
-            st.session_state.replay_attempted = True
-        except Exception as e:
-            st.error(f"Failed to start replay: {e}")
-
-    if c1.button("Stop Replay", use_container_width=True):
-        try:
-            replay_in_app.stop_replay()
-        except Exception as e:
-            st.error(f"Failed to stop replay: {e}")
-
-    st.session_state.auto_disrupt = st.sidebar.toggle(
-        "Comm Disruption", value=st.session_state.auto_disrupt
+    # Comm disruption toggle (auto OFF/ON every 5s)
+    new_toggle = st.sidebar.toggle(
+        "Comm disruption (auto OFF/ON 5s)", value=st.session_state.auto_disrupt
     )
-    # Apply auto disruption toggle live; when OFF, force system ONLINE
-    try:
-        replay_in_app.set_auto_disruption(st.session_state.auto_disrupt)
-        if not st.session_state.auto_disrupt:
-            set_online(True)
-    except Exception:
-        pass
+    if new_toggle != st.session_state.auto_disrupt:
+        st.session_state.auto_disrupt = new_toggle
+        try:
+            replay_in_app.set_auto_disruption(new_toggle)
+        except Exception:
+            pass
 
-    # Visual status with colored values; labels in red
-    online_now = is_online()
-    status_color = "green" if online_now else "red"
-    replay_running = replay_in_app.is_running()
-    replay_color = "green" if replay_running else "red"
+    # Visual status with colored values; labels in red (use latest monitor line)
+    last = _load_monitor_last(MONITOR_PATH)
+    online_flag = bool(last.get("online")) if last else False
     st.sidebar.markdown(
-        f"<span style='color:#d22;font-weight:600;'>Status</span>: "
-        f"<span style='color:{status_color};font-weight:700;'>{'ONLINE' if online_now else 'OFFLINE'}</span>",
-        unsafe_allow_html=True,
-    )
-    st.sidebar.markdown(
-        f"<span style='color:#d22;font-weight:600;'>Replay</span>: "
-        f"<span style='color:{replay_color};font-weight:700;'>{'running' if replay_running else 'stopped'}</span>",
+        f"Status: {_status_badge(online_flag)}",
         unsafe_allow_html=True,
     )
 
@@ -227,24 +230,45 @@ def main() -> None:
     # ---- Title ----
     st.title("Field Evidence – Live Demo")
 
-    # ---- Video Panel ----
+    # ---- Video Panel (half width) ----
     st.subheader("Video")
-    viz_dir = _Path("out/viz")
-    chosen_mp4: Optional[_Path] = None
-    try:
-        best = viz_dir / "clip_best.mp4"
-        if best.exists():
-            chosen_mp4 = best
-        elif viz_dir.exists():
-            vids = sorted(viz_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-            chosen_mp4 = vids[0] if vids else None
-    except Exception:
-        chosen_mp4 = None
-    if chosen_mp4 is not None:
-        st.video(str(chosen_mp4))
-        st.caption("Video with the highest reliability")
-    else:
-        st.info("No viz found yet — place clip_best.mp4 or any *.mp4 under out/viz/.")
+    left, right = st.columns([1, 1])
+    with left:
+        snip = _latest_snip()
+        if snip:
+            # Use HTML5 video tag with data URL to ensure autoplay
+            try:
+                data = base64.b64encode(snip.read_bytes()).decode("ascii")
+                html = (
+                    f"<video style='width:100%;height:auto;' autoplay muted playsinline controls>"
+                    f"<source src='data:video/mp4;base64,{data}' type='video/mp4'>"
+                    f"</video>"
+                )
+                st.components.v1.html(html, height=360)
+            except Exception:
+                st.video(str(snip))
+            st.caption("video with the highest reliability")
+        else:
+            vids = (
+                sorted(VIZ_DIR.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if VIZ_DIR.exists() else []
+            )
+            if vids:
+                st.video(str(vids[0]))
+                st.caption("latest viz (fallback)")
+            else:
+                st.info("No snips/viz found yet.")
+    with right:
+        if last:
+            d = int(last.get("depth", 0))
+            sps = int(last.get("sent_1s", 0))
+            p50 = float(last.get("p50_e2e_ms", 0.0))
+            st.markdown(f"Online: {_status_badge(online_flag)}", unsafe_allow_html=True)
+            st.metric("Queue depth", d)
+            st.metric("sent/s", sps)
+            st.metric("p50 e2e (ms)", f"{p50:.0f}")
+        else:
+            st.info("Waiting for monitor…")
 
     # ---- Events Panel ----
     st.subheader("Events")
@@ -284,17 +308,19 @@ def main() -> None:
 
     # ---- Queue Monitor & Stats ----
     st.subheader("Queue Monitor & Stats")
-    snaps = _load_monitor(MONITOR_PATH)
+    snaps = _load_monitor_tail(MONITOR_PATH)
     if not snaps:
         st.info("No monitor data yet — start replay to generate out/monitor.jsonl.")
     else:
-        last = snaps[-1]
-        c1, c2, c3, c4 = st.columns(4)
-        # Use actual online/offline state
-        c1.metric("Online", "True" if online_now else "False")
-        c2.metric("Queue depth", int(last.get("depth", 0)))
-        c3.metric("sent/s", int(last.get("sent_1s", 0)))
-        c4.metric("p50 e2e (ms)", f"{float(last.get('p50_e2e_ms', 0.0)):.0f}")
+        last_row = snaps[-1]
+        st.markdown(
+            f"Online: {_status_badge(bool(last_row.get('online', False)))}",
+            unsafe_allow_html=True,
+        )
+        c2, c3, c4 = st.columns(3)
+        c2.metric("Queue depth", int(last_row.get("depth", 0)))
+        c3.metric("sent/s", int(last_row.get("sent_1s", 0)))
+        c4.metric("p50 e2e (ms)", f"{float(last_row.get('p50_e2e_ms', 0.0)):.0f}")
 
         cols = [
             "t_ns",
