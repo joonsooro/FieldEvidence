@@ -85,11 +85,20 @@ replay: $(VENV)/bin/python
 run: $(VENV)/bin/python
 	$(STREAMLIT) src/ui/app.py
 
-eval: $(VENV)/bin/python
-	@echo "Stub: implement evaluation harness in src/eval and invoke it here."
+eval:
+	@echo "▶ Running evaluation harness..."
+	@python -m eval.harness
+	@echo ""
+	@echo "▶ Running tests (pytest)..."
+	@pytest -q
+	@echo ""
+	@echo "▶ Done. Evaluation report generated at eval/REPORT.md"
+	@echo "--------------------------------------------"
+	@cat eval/REPORT.md
+	@echo "--------------------------------------------"
 
 test: $(VENV)/bin/python
-	$(RUN) -m pytest
+	$(RUN) -m pytest -q
 
 clean:
 	rm -f $(PROTO_OUT)/*_pb2.py $(PROTO_OUT)/*_pb2_grpc.py

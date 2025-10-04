@@ -67,6 +67,30 @@ def mark_sent(seqs: List[int]) -> None:
 
 # --- in src/infra/store_forward.py ---
 
+def clear() -> None:
+    """
+    Truncate/clear the queue table and reclaim space.
+    Safe to call repeatedly.
+    """
+    conn = _ensure_conn()
+    try:
+        conn.execute("DELETE FROM queue;")
+        # VACUUM requires no active transaction; autocommit is enabled
+        conn.execute("VACUUM;")
+    except Exception:
+        # If anything goes wrong, ensure table exists then retry delete only
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS queue(
+              seq INTEGER PRIMARY KEY,
+              ts_ns INTEGER,
+              payload BLOB,
+              status INTEGER DEFAULT 0
+            );
+            """
+        )
+        conn.execute("DELETE FROM queue;")
+
 def drain(
     send_fn,
     limit: int = 100,
