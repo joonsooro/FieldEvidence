@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import base64
+import logging
+import os
 import time
 from pathlib import Path as _Path
 from typing import Dict, List, Optional
@@ -66,6 +68,40 @@ def _load_monitor_last(path: _Path) -> Dict[str, object] | None:
         return json.loads(last)
     except Exception:
         return None
+
+
+def _latest_mp4_under(dir_path: _Path) -> Optional[_Path]:
+    try:
+        if dir_path.exists():
+            vids = sorted(dir_path.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+            return vids[0] if vids else None
+    except Exception:
+        pass
+    return None
+
+def _render_video(path: _Path, height: int = 360) -> None:
+    """Render an mp4 reliably (base64 data URL fallback for autoplay)."""
+    log = logging.getLogger("ui.video")
+    try:
+        # Temporarily prefer native Streamlit video widget for reliability and smaller payloads.
+        # Use env USE_HTML_EMBED=1 to switch back to HTML data-URI embed for autoplay testing.
+        if not os.environ.get("USE_HTML_EMBED", "").strip():
+            st.video(str(path))
+            log.info("Rendered via st.video: %s", path)
+            return
+
+        import base64
+        data = base64.b64encode(path.read_bytes()).decode("ascii")
+        log.info("Rendering via HTML embed: path=%s bytes=%d", path, len(data))
+        html = (
+            f"<video style='width:100%;height:auto;' autoplay muted playsinline controls>"
+            f"<source src='data:video/mp4;base64,{data}' type='video/mp4'>"
+            f"</video>"
+        )
+        st.components.v1.html(html, height=height)
+    except Exception as e:
+        log.exception("HTML embed failed; falling back to st.video: %s", e)
+        st.video(str(path))
 
 
 def _status_badge(online: bool) -> str:
@@ -237,6 +273,8 @@ def main() -> None:
         try:
             if MONITOR_PATH.exists():
                 MONITOR_PATH.write_text("", encoding="utf-8")
+            # Force viz fallback until a new snip appears
+            st.session_state["_force_viz"] = True
         except Exception:
             pass
 
@@ -254,45 +292,7 @@ def main() -> None:
     # ---- Title ----
     st.title("Field Evidence – Live Demo")
 
-    # ---- Video Panel (half width) ----
-    st.subheader("Video")
-    left, right = st.columns([1, 1])
-    with left:
-        snip = _latest_snip()
-        if snip:
-            # Use HTML5 video tag with data URL to ensure autoplay
-            try:
-                data = base64.b64encode(snip.read_bytes()).decode("ascii")
-                html = (
-                    f"<video style='width:100%;height:auto;' autoplay muted playsinline controls>"
-                    f"<source src='data:video/mp4;base64,{data}' type='video/mp4'>"
-                    f"</video>"
-                )
-                st.components.v1.html(html, height=360)
-            except Exception:
-                st.video(str(snip))
-            st.caption("video with the highest reliability")
-        else:
-            vids = (
-                sorted(VIZ_DIR.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-                if VIZ_DIR.exists() else []
-            )
-            if vids:
-                st.video(str(vids[0]))
-                st.caption("latest viz (fallback)")
-            else:
-                st.info("No snips/viz found yet.")
-    with right:
-        if last:
-            d = int(last.get("depth", 0))
-            sps = int(last.get("sent_1s", 0))
-            p50 = float(last.get("p50_e2e_ms", 0.0))
-            st.markdown(f"Online: {_status_badge(online_flag)}", unsafe_allow_html=True)
-            st.metric("Queue depth", d)
-            st.metric("sent/s", sps)
-            st.metric("p50 e2e (ms)", f"{p50:.0f}")
-        else:
-            st.info("Waiting for monitor…")
+    
 
     # ---- Events Panel ----
     st.subheader("Events")
@@ -363,6 +363,43 @@ def main() -> None:
         else:
             df = _pd.DataFrame(table_rows)
             st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # ---- Bottom Video Panel ----
+    st.subheader("Video")
+
+    # Choose what to show:
+    # 1) If there is any snip, show the newest snip.
+    # 2) Else if _force_viz is set OR no snips exist, show newest viz.
+    # 3) Else show an info message.
+
+    snip = _latest_mp4_under(SNIPS_DIR)
+    viz  = _latest_mp4_under(VIZ_DIR)
+    log = logging.getLogger("ui.video")
+
+    use_viz = bool(st.session_state.get("_force_viz")) and viz is not None
+    # Debug visibility in UI and terminal
+    st.caption(f"DEBUG: snip={snip} viz={viz} use_viz={use_viz}")
+    try:
+        log.info("Bottom Video Panel select snip=%s viz=%s _force_viz=%s use_viz=%s", snip, viz, st.session_state.get("_force_viz"), use_viz)
+    except Exception:
+        pass
+    if snip is not None and not use_viz:
+        # Show the most recent snip (created on event)
+        _render_video(snip, height=360)
+        st.caption("Video generated at incident time (±2 s)")
+    elif viz is not None:
+        _render_video(viz, height=360)
+        st.caption("Fallback: latest viz")
+    else:
+        st.info("No video available yet. When an incident occurs, a snip will be generated here.")
+
+    # Once we have shown a snip, clear the viz-forced flag
+    if snip is not None and st.session_state.get("_force_viz"):
+        st.session_state["_force_viz"] = False
+        try:
+            log.info("Cleared _force_viz after rendering snip %s", snip)
+        except Exception:
+            pass
 
     # Keep steady 1 Hz refresh without extra UI controls
     time.sleep(1.0)
