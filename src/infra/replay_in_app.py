@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from threading import Thread
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -353,18 +354,16 @@ def _parse_event_time_iso8601(xml_path: Path) -> Optional[float]:
 
 
 def _pick_source_video() -> Optional[Path]:
-    viz = paths.VIZ_DIR
-    best = viz / "clip_best.mp4"
-    try:
-        if best.exists():
-            return best
-        if viz.exists():
-            vids = sorted(viz.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-            return vids[0] if vids else None
-    except Exception:
-        return None
+    """Find the most recent mp4 in viz/, fallback to snips/."""
+    for folder in [paths.VIZ_DIR, paths.SNIPS_DIR]:
+        try:
+            if folder.exists():
+                vids = sorted(folder.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if vids:
+                    return vids[0]
+        except Exception:
+            continue
     return None
-
 
 def _video_props(mp4: Path) -> tuple[float, int, float]:
     """Return (fps, total_frames, duration_s)."""
@@ -394,24 +393,52 @@ def _next_seq_number_under(dir_path: Path) -> int:
     return max(0, mx + 1)
 
 
-def _make_snip_from_latest(mp4: Path) -> Optional[Path]:
-    fps, total, dur_s = _video_props(mp4)
-    center_s = max(2.1, dur_s - 0.5)
-    seq = _next_seq_number_under(paths.SNIPS_DIR)
-    frame_tag = int(center_s * fps)
-    outp = paths.SNIPS_DIR / f"clip_{seq:02d}_f{frame_tag:04d}.mp4"
-    try:
-        return create_snip(mp4, center_s, 2.0, 2.0, outp)
-    except Exception:
+def _make_snip_from_event(src: Path, event_ts_s: float, margin_s: float = 2.0) -> Optional[Path]:
+    """Make ±margin_s clip near middle if timestamp invalid."""
+    fps, total, dur_s = _video_props(src)
+    if total <= 0 or fps <= 0.0:
         return None
+    # fallback center to middle of video if timestamp meaningless
+    rel = min(max(event_ts_s % dur_s, 0.0), dur_s)
+    f_center = int(rel * fps)
+    f_span = int(margin_s * fps)
+    f_start = max(0, f_center - f_span)
+    f_end = min(total - 1, f_center + f_span)
+
+    cap = cv2.VideoCapture(str(src))
+    if not cap.isOpened():
+        return None
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 360)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+
+    seq = _next_seq_number_under(paths.SNIPS_DIR)
+    outp = paths.SNIPS_DIR / f"clip_{seq:02d}_f{f_center:05d}.mp4"
+    vw = cv2.VideoWriter(str(outp), fourcc, fps, (width, height))
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, f_start)
+    for _ in range(f_end - f_start + 1):
+        ok, frame = cap.read()
+        if not ok:
+            break
+        vw.write(frame)
+
+    vw.release()
+    cap.release()
+    return outp
+    
+def delayed_snip(mp4_src: Path) -> None:
+    _make_snip_from_event(mp4_src)
 
 
 def _cot_watcher() -> None:
+    """
+    Watch new CoT files, parse event time, and call on_event_emitted().
+    """
     global _COT_THREAD
     seen: set[str] = set()
     try:
         while not _STOP.is_set():
-            # scan directory
             try:
                 COT_DIR.mkdir(parents=True, exist_ok=True)
                 files = sorted(COT_DIR.glob("*.xml"), key=lambda p: p.stat().st_mtime)
@@ -421,22 +448,13 @@ def _cot_watcher() -> None:
             new_files = [p for p in files if str(p) not in seen]
             for p in new_files:
                 seen.add(str(p))
-                # parse event time for potential future mapping (unused in fallback)
-                _ = _parse_event_time_iso8601(p)
-
-                # pick source video and schedule snip 2s later
-                src = _pick_source_video()
-                if src is None:
+                ev_ts = _parse_event_time_iso8601(p)
+                if ev_ts is None:
                     continue
+                # Build event dict
+                ev = {"ts_ns": int(ev_ts * 1e9), "video_path": str(_pick_source_video())}
+                on_event_emitted(ev)
 
-                def delayed_snip(mp4_src: Path) -> None:
-                    _make_snip_from_latest(mp4_src)
-
-                t = threading.Timer(2.0, delayed_snip, args=(src,))
-                t.daemon = True
-                t.start()
-
-            # poll interval ~1s
             _STOP.wait(0.8)
     finally:
         with _LOCK:
@@ -569,51 +587,29 @@ _SNIPS_DIR.mkdir(parents=True, exist_ok=True)
 
 def on_event_emitted(ev: dict) -> None:
     """
-    Called when an event is emitted during replay.
-    Expected keys (best-effort): 'video_path', 'frame_idx', 'fps', 'clip_id', 'reliability'
-    If missing, falls back to latest known video and fps=30.0.
+    Called when an event is emitted. Now triggers snip generation exactly at event time.
+    ev should include timestamp (in seconds) and video_path or fallback.
     """
     try:
-        # Lazy import to avoid hard dependency at import time
-        import cv2  # type: ignore
+        import cv2
+        # parse event timestamp
+        ts = None
+        if "ts_ns" in ev:
+            ts = ev["ts_ns"] / 1e9
+        elif "time" in ev:
+            ts = float(ev["time"])
+        if ts is None:
+            return
+
         video_path = ev.get("video_path") or _guess_latest_video()
         if not video_path or not Path(video_path).exists():
             return
 
-        fps = float(ev.get("fps") or 30.0)
-        f_center = int(ev.get("frame_idx") or 0)
-        span = int(2 * fps)  # ±2s
-        f_start = max(0, f_center - span)
-        f_end = f_center + span
-
-        cap = cv2.VideoCapture(str(video_path))
-        if not cap.isOpened():
-            return
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 360)
-        if f_end >= total and total > 0:
-            f_end = total - 1
-
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        clip_id = ev.get("clip_id") or "00"
-        out_name = f"clip_{clip_id}_f{f_center:05d}.mp4"
-        out_path = _SNIPS_DIR / out_name
-        vw = cv2.VideoWriter(str(out_path), fourcc, fps, (width, height))
-
-        cap.set(cv2.CAP_PROP_POS_FRAMES, f_start)
-        for _ in range(max(0, f_end - f_start + 1)):
-            ok, frame = cap.read()
-            if not ok:
-                break
-            vw.write(frame)
-
-        vw.release()
-        cap.release()
+        src = Path(video_path)
+        # do snip cutting in background thread so it doesn't block main
+        Thread(target=lambda: _make_snip_from_event(src, ts, margin_s=2.0), daemon=True).start()
     except Exception:
-        # swallow all errors; UI will simply have no new snip
         pass
-
 
 def _guess_latest_video() -> Optional[str]:
     # Prefer out/viz/*.mp4, fallback to any *.mp4 under out/

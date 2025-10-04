@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 import math
+import cv2  # type: ignore
 
 
 def create_snip(
@@ -13,7 +14,6 @@ def create_snip(
     out_path: Path,
 ) -> Optional[Path]:
     # Lazy import to avoid hard dependency at import time
-    import cv2  # type: ignore
     cap = cv2.VideoCapture(str(src_mp4))
     if not cap.isOpened():
         return None
