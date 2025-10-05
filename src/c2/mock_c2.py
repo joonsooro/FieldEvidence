@@ -47,6 +47,30 @@ def _warn_once(msg: str) -> None:
         LOG.warning(msg)
 
 
+def _write_ping_sizes(size: int, path: str = "out/ping_sizes.json", maxlen: int = 500) -> None:
+    """Append a size sample and persist rolling p95/max, degrading gracefully."""
+    try:
+        import json as _json
+        from pathlib import Path as _P
+        p = _P(path)
+        sizes: list[int] = []
+        if p.exists():
+            try:
+                data = _json.loads(p.read_text(encoding="utf-8"))
+                sizes = list(data.get("sizes") or [])
+            except Exception:
+                sizes = []
+        sizes.append(int(size))
+        sizes = sizes[-int(maxlen):]
+        arr = sorted(sizes)
+        p95 = arr[int(0.95 * (len(arr) - 1))] if arr else None
+        mx = max(arr) if arr else None
+        p.write_text(_json.dumps({"sizes": sizes, "p95": p95, "max": mx}, indent=2), encoding="utf-8")
+    except Exception:
+        # Never fail the pipeline on metrics I/O issues
+        pass
+
+
 def _uid_to_str(uid: Any) -> str:
     """Normalize UID to string for output/dedup without breaking upstream math."""
     try:
@@ -386,6 +410,10 @@ def stream_feed(
                             d = decode_ping(blob)
                             norm = _normalize_from_ping_dict(d)
                             _maybe_enqueue(norm, batch, dedup, seen_keys, dedup_by)
+                            try:
+                                _write_ping_sizes(len(blob))
+                            except Exception:
+                                pass
                         except Exception as e:
                             _warn_once(f"Decode error for ping: {e}")
                 except ValueError:
@@ -462,6 +490,10 @@ def stream_feed(
                             norm = _normalize_from_ping_dict(d)
                             _maybe_enqueue(norm, batch, dedup, seen_keys, dedup_by)
                             made_progress = True
+                            try:
+                                _write_ping_sizes(len(blob))
+                            except Exception:
+                                pass
                         except Exception as e:
                             _warn_once(f"Decode error for ping: {e}")
                             continue

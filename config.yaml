@@ -10,8 +10,8 @@ weights:
 
 thresholds:
   # 점수 기반 판정 임계 (C 규칙)
-  IMMEDIATE_score: 0.80
-  SUSPECT_score: 0.50
+  IMMEDIATE_score: 0.60
+  SUSPECT_score: 0.04
   # 하위 호환(있으면 사용): IMMEDIATE, SUSPECT
 
 # 멀티 조건 IMMEDIATE 규칙 (A/B)

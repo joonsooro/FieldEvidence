@@ -406,6 +406,16 @@ def main() -> None:
     st.subheader("C2 Panel")
     st.caption("SIMULATION ONLY / Human-in-loop / Synthetic")
 
+    # Optional metrics import guard; degrades to no-op if unavailable
+    try:
+        from src.utils.metrics import Metrics, measure_decision  # type: ignore
+    except Exception:
+        class Metrics:  # type: ignore
+            def record_decision_latency_ms(self, *_a, **_k):
+                pass
+        def measure_decision(fn, *a, **k):  # type: ignore
+            return fn(*a, **k), 0.0
+
     # Safe, optional imports inside the panel to avoid impacting app load.
     _C2_OK = True
     try:
@@ -541,14 +551,28 @@ def main() -> None:
         _reco: dict | None = None
         with _right:
             if _estimation is not None and _last_event is not None:
+                # Measure combined decision latency (risk + recommendation)
+                _metrics = Metrics()
+                def _risk_reco():
+                    r = _compute_risk(_estimation, _t_lat, _t_lon, _cfg)
+                    reco = _make_reco(_estimation, _last_event, _t_lat, _t_lon, _cfg)
+                    return r, reco
                 try:
-                    _risk = _compute_risk(_estimation, _t_lat, _t_lon, _cfg)
+                    (_risk, _reco), _elapsed_ms = measure_decision(_risk_reco)
+                    try:
+                        _metrics.record_decision_latency_ms(float(_elapsed_ms))
+                    except Exception:
+                        pass
                 except Exception:
-                    _risk = None
-                try:
-                    _reco = _make_reco(_estimation, _last_event, _t_lat, _t_lon, _cfg)
-                except Exception:
-                    _reco = None
+                    # Fallback to prior behavior computing pieces independently
+                    try:
+                        _risk = _compute_risk(_estimation, _t_lat, _t_lon, _cfg)
+                    except Exception:
+                        _risk = None
+                    try:
+                        _reco = _make_reco(_estimation, _last_event, _t_lat, _t_lon, _cfg)
+                    except Exception:
+                        _reco = None
 
                 # Show summary card
                 if _risk is not None:
@@ -670,6 +694,52 @@ def main() -> None:
                 st.code("\n".join(_log_lines))
         except Exception:
             pass
+
+        # Tiny metrics row under the C2 Panel (additive UI)
+        try:
+            import json as _json
+            from pathlib import Path as _PathLocal
+
+            _colA, _colB, _colC = st.columns(3)
+            _metrics_path = _PathLocal("out/metrics.json")
+            _ping_sizes_path = _PathLocal("out/ping_sizes.json")
+            _monitor_path = _PathLocal("out/monitor.jsonl")
+
+            # Decision latency p95
+            if _metrics_path.exists():
+                try:
+                    _m = _json.loads(_metrics_path.read_text(encoding="utf-8"))
+                    _p95 = (_m.get("decision_latency") or {}).get("p95_ms")
+                except Exception:
+                    _p95 = None
+                _colA.metric("Decision p95 (ms)", f"{float(_p95):.0f}" if _p95 else "n/a")
+            else:
+                _colA.caption("Decision p95: n/a")
+
+            # Payload size p95/max
+            if _ping_sizes_path.exists():
+                try:
+                    _ps = _json.loads(_ping_sizes_path.read_text(encoding="utf-8"))
+                    _p95_sz, _max_sz = _ps.get("p95"), _ps.get("max")
+                    _txt = f"{int(_p95_sz)} / {int(_max_sz)}" if (_p95_sz and _max_sz) else "n/a"
+                except Exception:
+                    _txt = "n/a"
+                _colB.metric("Payload p95/max (B)", _txt)
+            else:
+                _colB.caption("Payload: n/a")
+
+            # Recovery p95
+            _recov = None
+            if _monitor_path.exists():
+                try:
+                    _last = _json.loads(_monitor_path.read_text().splitlines()[-1])
+                    _recov = _last.get("p95_drain_ms")
+                except Exception:
+                    _recov = None
+            _colC.metric("Recovery p95 (ms)", f"{float(_recov):.0f}" if _recov else "n/a")
+
+        except Exception:
+            st.caption("Metrics: n/a")
 
     # Keep steady 1 Hz refresh without extra UI controls
     time.sleep(1.0)
