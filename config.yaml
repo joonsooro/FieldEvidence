@@ -1,0 +1,46 @@
+# Default configuration for C2 prioritization and recommendations
+
+asset_speed_mps: 12.0  # (추정 intent용) 이 속도 이상이면 의도 점수(속도기반)가 1.0에 수렴
+
+weights:
+  intent: 0.45        # 행동/속도 기반 의도
+  proximity: 0.35     # TTI 정규화(짧을수록↑)
+  recent: 0.20        # Tracker confidence (시간 감쇠 반영)
+  geo_bonus: 0.20     # 지오펜스 내부일 때 가점(절대 가산)
+
+thresholds:
+  # 점수 기반 판정 임계 (C 규칙)
+  IMMEDIATE_score: 0.80
+  SUSPECT_score: 0.50
+  # 하위 호환(있으면 사용): IMMEDIATE, SUSPECT
+
+# 멀티 조건 IMMEDIATE 규칙 (A/B)
+immediate_rules:
+  tti_ref_sec: 20.0     # proximity 정규화 기준
+  tti_sec_hard: 12.0    # (A) 강한 TTI 임계
+  tti_sec_geofence: 18.0  # (B) 지오펜스 내부 시 완화 TTI
+  intent_min: 0.75      # (A) 의도 최소
+  conf_min: 0.60        # (A) confidence 최소
+
+# 보호 자산(정책적 기준점) — 없으면 target 사용
+assets:
+  protected_lat: 52.5200
+  protected_lon: 13.4050
+  geofence_radius_m: 75.0
+
+# 기본 타깃(있으면 UI/체인에서 이 값으로 넘겨줄 수 있음)
+target:
+  lat: 52.5200
+  lon: 13.4050
+
+policy:
+  recommend_min_status: SUSPECT     # IMMEDIATE만 원하면 IMMEDIATE로
+  suspect_monitor_window_sec: 30.0  # SUSPECT일 때 관측 권고 시간
+
+c2:
+  promote_after_sec: 10.0
+  require_new_event: true
+  # (선택) 보조 전이 조건
+  # promote_if_distance_below_m: 150.0
+  # promote_if_tti_below_s: 30.0
+  # emit_observe_for_suspect: true

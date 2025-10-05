@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "C2Recommendation",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "event_id",
+    "uid",
+    "ts_ns",
+    "risk",
+    "action",
+    "message",
+    "created_ns"
+  ],
+  "properties": {
+    "event_id": { "type": "string" },
+    "uid": { "oneOf": [ {"type": "integer"}, {"type": "string"} ] },
+    "ts_ns": { "type": "integer" },
+    "risk": {
+      "type": "object",
+      "required": ["score", "status"],
+      "properties": {
+        "score": { "type": "number" },
+        "status": { "enum": ["IMMEDIATE", "SUSPECT", "INFO"] },
+        "factors": {
+          "type": "object",
+          "properties": {
+            "distance_m": { "type": "number" },
+            "proximity": { "type": "number" },
+            "intent": { "type": "number" },
+            "recent_rate": { "type": "number" }
+          }
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["INTERCEPT"] },
+        "eta_sec": { "type": ["number", "null"] },
+        "distance_m": { "type": "number" },
+        "bearing_deg": { "type": ["number", "null"] }
+      }
+    },
+    "message": { "type": "string" },
+    "created_ns": { "type": "integer" }
+  }
+}
+

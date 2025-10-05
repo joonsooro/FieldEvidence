@@ -26,3 +26,5 @@ pytest==8.1.1
 # --- Caching ---
 cachetools==5.3.3
 
+# ---yaml----
+pyyaml==6.03
