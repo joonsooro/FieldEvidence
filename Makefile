@@ -12,7 +12,7 @@ PROTO_DIR := $(dir $(PROTO_SRC))
 PROTO_OUT := src/wire
 PROTO_GEN := src/wire/salute_pb2.py src/wire/salute_pb2_grpc.py
 
-.PHONY: setup proto synth synth1 detect emit cot replay run eval test clean check
+.PHONY: setup proto synth synth1 detect emit cot replay run eval test clean check smoke-c2 freeze-check
 
 # ---------- Environment ----------
 setup: $(VENV)/bin/python
@@ -115,3 +115,11 @@ $(PROTO_GEN): $(PROTO_SRC) | $(VENV)/bin/python
 	@echo "✅ Protobuf generated into $(dir $(PROTO_SRC))"
 
 proto: $(PROTO_GEN)
+
+# ---------- Freeze / Smoke ----------
+smoke-c2:
+	@echo "▶ Running demo-freeze stub smoke..."
+	@bash scripts/smoke_c2.sh
+
+freeze-check: $(VENV)/bin/python
+	$(RUN) tools/freeze_guard.py --base-ref demo-freeze-v1.0
