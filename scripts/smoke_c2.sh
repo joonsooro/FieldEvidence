@@ -25,16 +25,17 @@ if [[ ! -s "${FEED_JSONL}" ]]; then
 fi
 echo "[SMOKE] feed OK ($(wc -l < "${FEED_JSONL}") lines)"
 
-# 2) Python: last-K by latest UID → Tracker → risk → recommendation (fallback to IMMEDIATE if needed)
-echo "[SMOKE] compute estimation/risk/recommendation"
+# 2) Python: last-K by latest UID → Tracker → risk → recommendation + breakdown metrics
+echo "[SMOKE] compute estimation/risk/recommendation (with breakdown)"
 python - <<'PY'
-import json, math, time, os, sys
+import json, time, yaml, sys
 from pathlib import Path
-import yaml
+from time import perf_counter
 
 from src.c2.estimator import Tracker
 from src.c2.prioritizer import compute_risk
 from src.c2.recommendation import make_recommendation
+from src.c2.metrics import Metrics  # ← record breakdown here
 
 FEED = Path("out/c2_feed.jsonl")
 RECO_SAMPLE = Path("out/reco_sample.jsonl")
@@ -50,58 +51,62 @@ if CONFIG.exists():
     except Exception:
         cfg = {}
 
-# Load last ~200 feed rows
+# Load feed and focus on latest UID (last K=50)
 lines = [json.loads(x) for x in FEED.read_text(encoding="utf-8").splitlines() if x.strip()]
-if not lines:
-    print("[SMOKE][ERR] empty feed", file=sys.stderr); sys.exit(3)
-
-# Pick latest UID
 latest = lines[-1]
 uid = latest.get("uid")
-by_uid = [r for r in lines if r.get("uid")==uid][-50:]  # K=50 window
+by_uid = [r for r in lines if r.get("uid")==uid][-50:]
 
-# Build estimation using Tracker
 trk = Tracker(window_sec=30.0, decay_tau_sec=float(cfg.get("decay_tau_sec", 20.0)))
+
+# --- estimate ---
+t0 = perf_counter()
 for ev in by_uid:
     trk.update({"ts_ns": int(ev["ts_ns"]), "lat": float(ev["lat"]), "lon": float(ev["lon"])})
-
 now_ns = int(by_uid[-1]["ts_ns"])
 est = trk.estimate(now_ns)
+t_est = (perf_counter() - t0) * 1000.0
 
-# Compute risk vs target in config (fallback defaults)
-tlat = cfg.get("target",{}).get("lat", 52.5200)
-tlon = cfg.get("target",{}).get("lon", 13.4050)
-risk = compute_risk(est, float(tlat), float(tlon), cfg)
+# --- risk ---
+t0 = perf_counter()
+tlat = float(cfg.get("target",{}).get("lat", 52.5200))
+tlon = float(cfg.get("target",{}).get("lon", 13.4050))
+risk = compute_risk(est, tlat, tlon, cfg)
+t_risk = (perf_counter() - t0) * 1000.0
 
-# Try to build recommendation; if None or not INTERCEPT, synthesize IMMEDIATE for smoke
-reco = make_recommendation(est, {"event_id": latest.get("event_id","smoke#auto"),
-                                 "uid": latest.get("uid"), "ts_ns": latest.get("ts_ns", now_ns)},
-                           float(tlat), float(tlon), cfg)
+# --- reco ---
+t0 = perf_counter()
+reco = make_recommendation(
+    est,
+    {"event_id": latest.get("event_id","smoke#auto"),
+     "uid": latest.get("uid"),
+     "ts_ns": latest.get("ts_ns", now_ns)},
+    tlat, tlon, cfg
+)
+t_reco = (perf_counter() - t0) * 1000.0
 
+# fallback to synthetic immediate (smoke only)
 def _bearing(lat1, lon1, lat2, lon2):
     import math
     dlon = math.radians(lon2-lon1)
     a1 = math.radians(lat1); a2 = math.radians(lat2)
     y = math.sin(dlon)*math.cos(a2)
     x = math.cos(a1)*math.sin(a2) - math.sin(a1)*math.cos(a2)*math.cos(dlon)
-    brng = (math.degrees(math.atan2(y,x))+360.0)%360.0
-    return brng
+    return (math.degrees(math.atan2(y,x))+360.0)%360.0
 
-# Haversine meters
 def _dist_m(lat1, lon1, lat2, lon2):
-    R=6371000.0
     import math
+    R=6371000.0
     dlat = math.radians(lat2-lat1); dlon = math.radians(lon2-lon1)
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1))*math.cos(math.radians(lat2))*math.sin(dlon/2)**2
     return 2*R*math.asin(math.sqrt(a))
 
-# If reco is None or not immediate intercept, synthesize an IMMEDIATE intercept reco (for smoke only)
-def _synth_immediate(est, risk, tlat, tlon, cfg):
+if not reco or (isinstance(reco, dict) and reco.get("action",{}).get("type")!="INTERCEPT"):
     pos = est["est_pos"]; lat, lon = float(pos["lat"]), float(pos["lon"])
     dist = _dist_m(lat, lon, tlat, tlon)
     brg = _bearing(lat, lon, tlat, tlon)
     eta = dist / float(cfg.get("asset_speed_mps", 25.0)) if dist>0 else 10.0
-    return {
+    reco = {
         "event_id": "smoke#synthetic",
         "uid": "smoke",
         "ts_ns": int(time.time_ns()),
@@ -112,17 +117,20 @@ def _synth_immediate(est, risk, tlat, tlon, cfg):
         "created_ns": int(time.time_ns()),
     }
 
-if not reco or (isinstance(reco, dict) and reco.get("action",{}).get("type")!="INTERCEPT"):
-    reco = _synth_immediate(est, risk, float(tlat), float(tlon), cfg)
+# --- metrics breakdown write ---
+m = Metrics()
+# NOTE: decode_ms is not measured in this smoke path (no decode stage here)
+m.record_estimate_ms(t_est)
+m.record_risk_ms(t_risk)
+m.record_reco_ms(t_reco)
+m.record_total_ms(t_est + t_risk + t_reco)
 
-# Append single sample reco
+# append reco sample
 RECO_SAMPLE.parent.mkdir(parents=True, exist_ok=True)
 with RECO_SAMPLE.open("a", encoding="utf-8") as f:
     f.write(json.dumps(reco)+"\n")
 
-print("[SMOKE] reco OK:", ("IMMEDIATE" if reco.get("risk",{}).get("status")=="IMMEDIATE" else reco.get("severity")))
-# Also print a tiny summary for the outer script
-print(json.dumps({"ok": True, "severity": reco.get("risk",{}).get("status") or reco.get("severity")}, ensure_ascii=False))
+print("[SMOKE] reco OK:", (reco.get("risk",{}).get("status") or reco.get("severity")))
 PY
 
 # 3) Approve and dispatch → audit timeline must append 3 states

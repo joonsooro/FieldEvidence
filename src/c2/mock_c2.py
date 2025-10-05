@@ -407,7 +407,20 @@ def stream_feed(
                     for blob in read_ld_stream(fp):
                         pos_pings = fp.tell()
                         try:
+                            # NOTE: Decode timing is disabled in demo mode. Enable once live decoder path exists.
+                            # try:
+                            #     from src.c2.metrics import Metrics
+                            # except Exception:
+                            #     Metrics = None
+                            # import time as _t
+                            # _t0 = _t.perf_counter()
                             d = decode_ping(blob)
+                            # _dec_ms = (_t.perf_counter() - _t0) * 1000.0
+                            # if Metrics:
+                            #     try:
+                            #         Metrics().record_decode_ms(_dec_ms)
+                            #     except Exception:
+                            #         pass
                             norm = _normalize_from_ping_dict(d)
                             _maybe_enqueue(norm, batch, dedup, seen_keys, dedup_by)
                             try:
@@ -486,7 +499,20 @@ def stream_feed(
                         blob = bytes(ping_buffer[start:end])
                         consumed = end
                         try:
+                            # NOTE: Decode timing is disabled in demo mode. Enable once live decoder path exists.
+                            # try:
+                            #     from src.c2.metrics import Metrics
+                            # except Exception:
+                            #     Metrics = None
+                            # import time as _t
+                            # _t0 = _t.perf_counter()
                             d = decode_ping(blob)
+                            # _dec_ms = (_t.perf_counter() - _t0) * 1000.0
+                            # if Metrics:
+                            #     try:
+                            #         Metrics().record_decode_ms(_dec_ms)
+                            #     except Exception:
+                            #         pass
                             norm = _normalize_from_ping_dict(d)
                             _maybe_enqueue(norm, batch, dedup, seen_keys, dedup_by)
                             made_progress = True

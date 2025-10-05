@@ -408,11 +408,9 @@ def main() -> None:
 
     # Optional metrics import guard; degrades to no-op if unavailable
     try:
-        from src.utils.metrics import Metrics, measure_decision  # type: ignore
+        from src.c2.metrics import Metrics, measure_decision  # type: ignore
     except Exception:
-        class Metrics:  # type: ignore
-            def record_decision_latency_ms(self, *_a, **_k):
-                pass
+        Metrics = None  # type: ignore
         def measure_decision(fn, *a, **k):  # type: ignore
             return fn(*a, **k), 0.0
 
@@ -509,25 +507,34 @@ def main() -> None:
 
         # Middle: latest estimation via Tracker on last K events
         _estimation: dict | None = None
+        _est_ms: float | None = None
         _last_event: dict | None = _events[-1] if _events else None
         with _mid:
             if not _events:
                 st.info("Insufficient events for estimation.")
             else:
                 try:
-                    _tracker = _Tracker(window_sec=30.0, decay_tau_sec=20.0)
-                    # Order last K by ts_ns to ensure monotonic updates
-                    _K = 10
-                    _by_ts = sorted(_events[-_K:], key=lambda e: int(e.get("ts_ns", 0)))
-                    for _e in _by_ts:
-                        _tracker.update({
-                            "ts_ns": int(_e.get("ts_ns", 0)),
-                            "lat": float(_e.get("lat", 0.0)),
-                            "lon": float(_e.get("lon", 0.0)),
-                            "conf": float(_e.get("conf", 1.0)) if _e.get("conf") is not None else 1.0,
-                        })
-                    _now_ns = int(_by_ts[-1].get("ts_ns", 0)) if _by_ts else 0
-                    _estimation = _tracker.estimate(now_ns=_now_ns)
+                    def _do_est():
+                        _tracker = _Tracker(window_sec=30.0, decay_tau_sec=20.0)
+                        # Order last K by ts_ns to ensure monotonic updates
+                        _K = 10
+                        _by_ts = sorted(_events[-_K:], key=lambda e: int(e.get("ts_ns", 0)))
+                        for _e in _by_ts:
+                            _tracker.update({
+                                "ts_ns": int(_e.get("ts_ns", 0)),
+                                "lat": float(_e.get("lat", 0.0)),
+                                "lon": float(_e.get("lon", 0.0)),
+                                "conf": float(_e.get("conf", 1.0)) if _e.get("conf") is not None else 1.0,
+                            })
+                        _now_ns = int(_by_ts[-1].get("ts_ns", 0)) if _by_ts else 0
+                        return _tracker.estimate(now_ns=_now_ns)
+
+                    (_estimation, _est_ms) = measure_decision(_do_est)
+                    try:
+                        if Metrics is not None and _est_ms is not None:
+                            Metrics().record_estimate_ms(float(_est_ms))
+                    except Exception:
+                        pass
 
                     _pos = _estimation.get("est_pos", {})
                     _vel = _estimation.get("est_vel", {})
@@ -551,28 +558,50 @@ def main() -> None:
         _reco: dict | None = None
         with _right:
             if _estimation is not None and _last_event is not None:
-                # Measure combined decision latency (risk + recommendation)
-                _metrics = Metrics()
-                def _risk_reco():
-                    r = _compute_risk(_estimation, _t_lat, _t_lon, _cfg)
-                    reco = _make_reco(_estimation, _last_event, _t_lat, _t_lon, _cfg)
-                    return r, reco
+                # Measure per-stage and total latencies
+                _metrics = Metrics() if Metrics is not None else None
+
+                # risk
                 try:
-                    (_risk, _reco), _elapsed_ms = measure_decision(_risk_reco)
+                    def _do_risk():
+                        return _compute_risk(_estimation, _t_lat, _t_lon, _cfg)
+                    (_risk, _risk_ms) = measure_decision(_do_risk)
                     try:
-                        _metrics.record_decision_latency_ms(float(_elapsed_ms))
+                        if _metrics is not None:
+                            _metrics.record_risk_ms(float(_risk_ms))
                     except Exception:
                         pass
                 except Exception:
-                    # Fallback to prior behavior computing pieces independently
                     try:
                         _risk = _compute_risk(_estimation, _t_lat, _t_lon, _cfg)
                     except Exception:
                         _risk = None
+                    _risk_ms = 0.0
+
+                # reco
+                try:
+                    def _do_reco():
+                        return _make_reco(_estimation, _last_event, _t_lat, _t_lon, _cfg)
+                    (_reco, _reco_ms) = measure_decision(_do_reco)
+                    try:
+                        if _metrics is not None:
+                            _metrics.record_reco_ms(float(_reco_ms))
+                    except Exception:
+                        pass
+                except Exception:
                     try:
                         _reco = _make_reco(_estimation, _last_event, _t_lat, _t_lon, _cfg)
                     except Exception:
                         _reco = None
+                    _reco_ms = 0.0
+
+                # total envelope (approximate as sum of stages if available)
+                try:
+                    _total_ms = float((_est_ms or 0.0) + float(_risk_ms or 0.0) + float(_reco_ms or 0.0))
+                    if _metrics is not None:
+                        _metrics.record_total_ms(_total_ms)
+                except Exception:
+                    pass
 
                 # Show summary card
                 if _risk is not None:
@@ -705,16 +734,16 @@ def main() -> None:
             _ping_sizes_path = _PathLocal("out/ping_sizes.json")
             _monitor_path = _PathLocal("out/monitor.jsonl")
 
-            # Decision latency p95
+            # Decision/Total latency p95
             if _metrics_path.exists():
                 try:
                     _m = _json.loads(_metrics_path.read_text(encoding="utf-8"))
                     _p95 = (_m.get("decision_latency") or {}).get("p95_ms")
                 except Exception:
                     _p95 = None
-                _colA.metric("Decision p95 (ms)", f"{float(_p95):.0f}" if _p95 else "n/a")
+                _colA.metric("Total p95 (ms)", f"{float(_p95):.0f}" if _p95 else "n/a")
             else:
-                _colA.caption("Decision p95: n/a")
+                _colA.caption("Total p95: n/a")
 
             # Payload size p95/max
             if _ping_sizes_path.exists():
