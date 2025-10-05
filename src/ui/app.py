@@ -401,6 +401,276 @@ def main() -> None:
         except Exception:
             pass
 
+    # ---- C2 Panel ----
+    # Appended section: optional C2 pipeline UI. Degrades gracefully.
+    st.subheader("C2 Panel")
+    st.caption("SIMULATION ONLY / Human-in-loop / Synthetic")
+
+    # Safe, optional imports inside the panel to avoid impacting app load.
+    _C2_OK = True
+    try:
+        from pathlib import Path as _P
+        import yaml as _yaml  # type: ignore
+        from src.c2.estimator import Tracker as _Tracker  # type: ignore
+        from src.c2.prioritizer import compute_risk as _compute_risk  # type: ignore
+        from src.c2.recommendation import make_recommendation as _make_reco  # type: ignore
+        from src.c2.scheduler import approve_and_dispatch as _approve  # type: ignore
+    except Exception:
+        _C2_OK = False
+
+    if not _C2_OK:
+        st.info("C2 modules not available. Panel is disabled.")
+    else:
+        # Initialize panel-local session state
+        if "c2_log" not in st.session_state:
+            st.session_state.c2_log = []  # type: ignore[attr-defined]
+        if "c2_last_dispatch" not in st.session_state:
+            st.session_state.c2_last_dispatch = None  # type: ignore[attr-defined]
+
+        # Load configuration (optional); fallback to sensible defaults
+        _cfg_path = _P("config.yaml")
+        _cfg_default = {
+            "asset_speed_mps": 25.0,
+            "weights": {"intent": 0.5, "proximity": 0.3, "recent": 0.2},
+            "thresholds": {"IMMEDIATE": 0.8, "SUSPECT": 0.5},
+            "target": {"lat": 52.5200, "lon": 13.4050},
+        }
+        _cfg = dict(_cfg_default)
+        try:
+            if _cfg_path.exists():
+                _loaded = _yaml.safe_load(_cfg_path.read_text(encoding="utf-8")) or {}
+                if isinstance(_loaded, dict):
+                    # Shallow-merge
+                    _cfg.update(_loaded)
+        except Exception:
+            pass
+
+        _target = dict(_cfg.get("target", {}))
+        _t_lat = float(_target.get("lat", 52.5200))
+        _t_lon = float(_target.get("lon", 13.4050))
+
+        # Load recent normalized events for the left column
+        _feed_path = _P("out/c2_feed.jsonl")
+        _events: list[dict] = []
+        if _feed_path.exists():
+            try:
+                from collections import deque as _deque  # local, cheap
+                _dq = _deque(maxlen=50)
+                with _feed_path.open("r", encoding="utf-8") as _f:
+                    for _line in _f:
+                        _line = _line.strip()
+                        if not _line:
+                            continue
+                        try:
+                            _dq.append(json.loads(_line))
+                        except Exception:
+                            continue
+                _events = list(_dq)
+            except Exception:
+                _events = []
+
+        # 3 columns: feed, estimation, risk/recommendation
+        _left, _mid, _right = st.columns(3)
+
+        # Left: c2 feed table (or info)
+        with _left:
+            if not _events:
+                st.info("C2 feed not available yet.")
+            else:
+                _cols = [
+                    "event_id",
+                    "uid",
+                    "ts_ns",
+                    "lat",
+                    "lon",
+                    "event_code",
+                    "conf",
+                    "intent_score",
+                ]
+                _rows = [{k: e.get(k) for k in _cols} for e in _events]
+                try:
+                    if _pd is None:
+                        st.write(_rows)
+                    else:
+                        _df = _pd.DataFrame(_rows)
+                        st.dataframe(_df, use_container_width=True, hide_index=True)
+                except Exception:
+                    st.write(_rows)
+
+        # Middle: latest estimation via Tracker on last K events
+        _estimation: dict | None = None
+        _last_event: dict | None = _events[-1] if _events else None
+        with _mid:
+            if not _events:
+                st.info("Insufficient events for estimation.")
+            else:
+                try:
+                    _tracker = _Tracker(window_sec=30.0, decay_tau_sec=20.0)
+                    # Order last K by ts_ns to ensure monotonic updates
+                    _K = 10
+                    _by_ts = sorted(_events[-_K:], key=lambda e: int(e.get("ts_ns", 0)))
+                    for _e in _by_ts:
+                        _tracker.update({
+                            "ts_ns": int(_e.get("ts_ns", 0)),
+                            "lat": float(_e.get("lat", 0.0)),
+                            "lon": float(_e.get("lon", 0.0)),
+                            "conf": float(_e.get("conf", 1.0)) if _e.get("conf") is not None else 1.0,
+                        })
+                    _now_ns = int(_by_ts[-1].get("ts_ns", 0)) if _by_ts else 0
+                    _estimation = _tracker.estimate(now_ns=_now_ns)
+
+                    _pos = _estimation.get("est_pos", {})
+                    _vel = _estimation.get("est_vel", {})
+                    _conf = float(_estimation.get("confidence", 0.0))
+
+                    _m1, _m2 = st.columns(2)
+                    with _m1:
+                        st.metric("Est Lat", f"{float(_pos.get('lat', 0.0)):.5f}")
+                        st.metric("Velocity (m/s)", f"{float(_vel.get('mps', 0.0)):.1f}")
+                    with _m2:
+                        st.metric("Est Lon", f"{float(_pos.get('lon', 0.0)):.5f}")
+                        _hdg = _vel.get("heading_deg", None)
+                        st.metric("Heading (deg)", "—" if _hdg is None else f"{float(_hdg):.0f}")
+                    st.caption(f"Confidence: {_conf:.2f}")
+                except Exception:
+                    _estimation = None
+                    st.info("Insufficient events for estimation.")
+
+        # Right: risk and recommendation with actions
+        _risk: dict | None = None
+        _reco: dict | None = None
+        with _right:
+            if _estimation is not None and _last_event is not None:
+                try:
+                    _risk = _compute_risk(_estimation, _t_lat, _t_lon, _cfg)
+                except Exception:
+                    _risk = None
+                try:
+                    _reco = _make_reco(_estimation, _last_event, _t_lat, _t_lon, _cfg)
+                except Exception:
+                    _reco = None
+
+                # Show summary card
+                if _risk is not None:
+                    _status = str(_risk.get("status", "")).upper()
+                    _score = float(_risk.get("score", 0.0))
+                    st.markdown(f"**Status:** {_status}  ·  **Score:** {_score:.2f}")
+                    _f = dict(_risk.get("factors", {}))
+                    _dist = float(_f.get("distance_m", 0.0))
+                    _tti = float(_f.get("tti_sec", 0.0))
+                    _cs = float(_f.get("closing_speed_mps", 0.0))
+                    st.caption(
+                        f"distance={_dist:.0f} m · tti={_tti:.1f} s · closing={_cs:.1f} m/s"
+                    )
+
+                if _reco is None:
+                    st.info("No immediate recommendation; SUSPECT may produce OBSERVE recommendation")
+                # Action buttons
+                _cA, _cB = st.columns(2)
+                with _cA:
+                    _approve_clicked = st.button("Approve", use_container_width=True)
+                with _cB:
+                    _ignore_clicked = st.button("Ignore", use_container_width=True)
+
+                if _approve_clicked:
+                    try:
+                        if _reco is None or str(_reco.get("action", {}).get("type", "")).upper() != "INTERCEPT":
+                            st.warning("No actionable recommendation (not IMMEDIATE).")
+                        else:
+                            _out = _approve(
+                                _reco,
+                                _estimation,  # type: ignore[arg-type]
+                                _cfg,
+                                audit_path=_P("out/c2_audit.jsonl"),
+                            )
+                            st.session_state.c2_last_dispatch = _out  # type: ignore[attr-defined]
+                            try:
+                                _line = f"APPROVED {_reco.get('event_id')} → {_out.get('asset_id')} ETA={float(_out.get('eta_sec', 0.0)):.1f}s"
+                                st.session_state.c2_log.append(_line)  # type: ignore[attr-defined]
+                                st.session_state.c2_log = st.session_state.c2_log[-20:]  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+                            st.toast("SIMULATION ONLY: dispatch scheduled")
+                    except Exception as _e:
+                        st.warning(f"Dispatch failed: {_e}")
+
+                if _ignore_clicked:
+                    try:
+                        _ev_id = (_last_event or {}).get("event_id")
+                        st.session_state.c2_log.append(f"IGNORED {_ev_id}")  # type: ignore[attr-defined]
+                        st.session_state.c2_log = st.session_state.c2_log[-20:]  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+            else:
+                st.info("Waiting for events to compute risk.")
+
+        # Map: always render
+        try:
+            _center_lat, _center_lon = _t_lat, _t_lon
+            _zoom = 6
+            if _estimation is not None:
+                _pos = _estimation.get("est_pos", {})
+                _center_lat = float(_pos.get("lat", _t_lat))
+                _center_lon = float(_pos.get("lon", _t_lon))
+                _zoom = 12
+
+            _m = folium.Map(location=[_center_lat, _center_lon], zoom_start=_zoom)
+            # Target asset marker
+            try:
+                folium.Marker(
+                    location=(_t_lat, _t_lon),
+                    tooltip="Asset",
+                    icon=folium.Icon(color="green", icon="flag"),
+                ).add_to(_m)
+            except Exception:
+                pass
+            # Estimated position marker
+            if _estimation is not None:
+                try:
+                    _pos = _estimation.get("est_pos", {})
+                    folium.Marker(
+                        location=(float(_pos.get("lat", _t_lat)), float(_pos.get("lon", _t_lon))),
+                        tooltip="Est Pos",
+                        icon=folium.Icon(color="red"),
+                    ).add_to(_m)
+                except Exception:
+                    pass
+            # Intercept marker + line if available
+            try:
+                _ld = st.session_state.c2_last_dispatch  # type: ignore[attr-defined]
+                if _ld and isinstance(_ld, dict):
+                    _intc = _ld.get("intercept", {})
+                    _ilat = float(_intc.get("lat"))
+                    _ilon = float(_intc.get("lon"))
+                    _eta = float(_ld.get("eta_sec", 0.0))
+                    folium.Marker(
+                        location=(_ilat, _ilon),
+                        tooltip=f"Intercept (ETA ~{_eta:.0f}s)",
+                        icon=folium.Icon(color="blue", icon="target"),
+                    ).add_to(_m)
+                    if _estimation is not None:
+                        _pos = _estimation.get("est_pos", {})
+                        folium.PolyLine([
+                            (float(_pos.get("lat", _t_lat)), float(_pos.get("lon", _t_lon))),
+                            (_ilat, _ilon),
+                        ], color="blue", weight=2, opacity=0.8).add_to(_m)
+            except Exception:
+                pass
+
+            _map_html = _m.get_root().render()
+            st.components.v1.html(_map_html, height=420, scrolling=False)
+        except Exception:
+            st.info("Map unavailable.")
+
+        # Rolling mini log
+        try:
+            _log_lines = st.session_state.c2_log  # type: ignore[attr-defined]
+            if _log_lines:
+                st.caption("C2 Log (last 20)")
+                st.code("\n".join(_log_lines))
+        except Exception:
+            pass
+
     # Keep steady 1 Hz refresh without extra UI controls
     time.sleep(1.0)
     st.rerun()
