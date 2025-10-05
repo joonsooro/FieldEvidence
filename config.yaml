@@ -1,17 +1,17 @@
 # Default configuration for C2 prioritization and recommendations
 
-asset_speed_mps: 12.0  # (추정 intent용) 이 속도 이상이면 의도 점수(속도기반)가 1.0에 수렴
+asset_speed_mps: 25.0  # (추정 intent용) 이 속도 이상이면 의도 점수(속도기반)가 1.0에 수렴
 
 weights:
-  intent: 0.45        # 행동/속도 기반 의도
+  intent: 0.65        # 행동/속도 기반 의도
   proximity: 0.35     # TTI 정규화(짧을수록↑)
-  recent: 0.20        # Tracker confidence (시간 감쇠 반영)
+  recent: 0.25        # Tracker confidence (시간 감쇠 반영)
   geo_bonus: 0.20     # 지오펜스 내부일 때 가점(절대 가산)
 
 thresholds:
   # 점수 기반 판정 임계 (C 규칙)
-  IMMEDIATE_score: 0.60
-  SUSPECT_score: 0.04
+  IMMEDIATE_score: 0.80
+  SUSPECT_score: 0.60
   # 하위 호환(있으면 사용): IMMEDIATE, SUSPECT
 
 # 멀티 조건 IMMEDIATE 규칙 (A/B)
@@ -38,8 +38,9 @@ policy:
   suspect_monitor_window_sec: 30.0  # SUSPECT일 때 관측 권고 시간
 
 c2:
-  promote_after_sec: 10.0
-  require_new_event: true
+  demo_mode: true           # UI/logic may show “SIMULATION ONLY” badge, etc.
+  promote_after_sec: 10.0   # (optional) time-based promote if you already use it
+  require_new_event: false  # prefer “immediate on first sight” for demo smoothness
   # (선택) 보조 전이 조건
   # promote_if_distance_below_m: 150.0
   # promote_if_tti_below_s: 30.0
