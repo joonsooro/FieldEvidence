@@ -406,6 +406,15 @@ def main() -> None:
     st.subheader("C2 Panel")
     st.caption("SIMULATION ONLY / Human-in-loop / Synthetic")
 
+    # ---- Label Mode Fallback Badge (optional) ----
+    try:
+        from pathlib import Path as _P
+        _label_flag = _P("out/label_mode.on")
+        if _label_flag.exists():
+            st.warning("🟡 Label Mode Active — using fallback events", icon="⚠️")
+    except Exception:
+        pass
+
     # Optional metrics import guard; degrades to no-op if unavailable
     try:
         from src.c2.metrics import Metrics, measure_decision  # type: ignore
