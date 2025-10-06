@@ -1,0 +1,22 @@
+name: Demo Branch Guard
+on:
+  push:
+    branches:
+      - demo-freeze-v1
+  pull_request:
+    branches:
+      - demo-freeze-v1
+
+jobs:
+  check-metrics-import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure no src.utils.metrics imports in demo branch
+        run: |
+          if rg -n "src\.utils\.metrics" src; then
+            echo "❌ Do not import src.utils.metrics in demo branch"; exit 1
+          else
+            echo "✅ Metrics import check passed"
+          fi
+
