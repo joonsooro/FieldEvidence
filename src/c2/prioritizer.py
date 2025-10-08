@@ -84,31 +84,31 @@ def compute_risk(estimation: Dict, target_lat: float, target_lon: float, cfg: Di
     # Optional behavior intent override
     intent_score = estimation.get("intent_score", None)
     if intent_score is None:
-        # Fallback: 속도 임계 기반 (단, 0..1 범위로 부드럽게)
+        # Fallback: speed-threshold based (smooth within 0..1)
         # 0.5 @ 0 mps  → 1.0 @ >= asset_speed_mps
         intent_score = 0.5 + 0.5 * _clamp(mps / max(1e-6, asset_speed_mps), 0.0, 1.0)
     intent_score = float(intent_score)
 
     # --- geometry: distance & alignment ---
-    # 보호 자산까지의 거리 (또는 함수 인자로 받은 target 좌표)
+    # Distance to protected asset (or target coordinates passed in)
     dist_m = haversine(plat, plon, target_lat, target_lon)
 
-    # 진행 방위 vs 목표(자산) 방위 차이
+    # Difference between current heading and bearing to asset
     bearing_to_asset = bearing_deg(plat, plon, target_lat, target_lon)
     if heading is None:
-        # 방위 모르면 접근 가정(보수적). 필요시 0.5로 완화 가능.
+        # If heading unknown, assume approaching (conservative). Optionally relax to 0.5.
         approach = 1.0
     else:
         ddeg = _angle_diff_deg(float(heading), float(bearing_to_asset))
-        approach = max(0.0, math.cos(math.radians(ddeg)))  # 1=정면 접근, 0=직각, <0=이탈(0 처리)
+        approach = max(0.0, math.cos(math.radians(ddeg)))  # 1=head-on, 0=perpendicular, <0=departing (clip to 0)
 
-    closing_speed = mps * approach  # m/s (접근 성분)
+    closing_speed = mps * approach  # m/s (approach component)
     if closing_speed <= 1e-6:
         tti_sec = float("inf")
     else:
         tti_sec = dist_m / closing_speed
 
-    # --- proximity term: TTI 정규화 (작을수록 1에 수렴) ---
+    # --- proximity term: TTI normalized (smaller → closer to 1) ---
     proximity_term = tti_ref_sec / max(tti_ref_sec, tti_sec)
 
     # --- geo bonus ---
@@ -126,13 +126,13 @@ def compute_risk(estimation: Dict, target_lat: float, target_lon: float, cfg: Di
 
     # --- multi-condition decision (A/B/C) ---
     status = "INFO"
-    # A: 시간 촉박 + 의도 + 신뢰
+    # A: tight time + intent + confidence
     if (tti_sec <= tti_sec_hard) and (intent_score >= intent_min) and (confidence >= conf_min):
         status = "IMMEDIATE"
-    # B: 정책 구역 내부면 완화된 임계
+    # B: relaxed threshold when inside geofence
     elif geo_inside and (tti_sec <= tti_sec_geofence):
         status = "IMMEDIATE"
-    # C: 점수 기반
+    # C: score-based
     elif score >= thr_immediate_score:
         status = "IMMEDIATE"
     elif score >= thr_suspect_score:

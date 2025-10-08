@@ -29,16 +29,16 @@ _WARNED_TEXTS: set[str] = set()
 
 # ------------------------------- utils ---------------------------------------
 def _uid_to_int(uid_val) -> int:
-    # 이미 int면 그대로
+    # If already an int, use as-is
     if isinstance(uid_val, int):
         return uid_val
-    # 문자열/기타 → sha1 상위 8바이트를 부호없는 64비트 정수로
+    # For string/other types → use the top 8 bytes of sha1 as an unsigned 64-bit integer
     b = str(uid_val).encode("utf-8")
     h = hashlib.sha1(b).digest()[:8]
     return int.from_bytes(h, "big", signed=False)
 
 def _suffix_ms_from_ts(ts_ns: int) -> int:
-    # ns → ms 반올림
+    # ns → ms with rounding
     return int(round(ts_ns / 1_000_000.0))
 
 def _warn_once(msg: str) -> None:
@@ -125,7 +125,7 @@ def _norm_event(
 
 # ------------------------------ decoders -------------------------------------
 
-# events 정규화 (normalize_event_dict)
+# Normalize events (normalize_event_dict)
 def normalize_event_dict(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     try:
         if "uid" not in raw:
@@ -143,7 +143,7 @@ def normalize_event_dict(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
         return {
             "event_id": f"{uid_int}#{suffix_ms}",
-            "uid": uid_int,                   # ← 항상 정수
+            "uid": uid_int,                   # ← always integer
             "ts_ns": ts_ns,
             "lat": lat,
             "lon": lon,
@@ -556,13 +556,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                help="Deduplicate by 'event_id' (uid#ms, default) or by 'time' (ms suffix only)")
     return p
 
-#공동 키 생성기
+# Common key generator
 def _dedup_key(obj: Dict[str, Any], mode: str) -> Optional[str]:
     try:
         if mode == "event_id":
             return str(obj.get("event_id"))
         elif mode == "time":
-            # uid 무시, 동일 ms 타임스탬프만 기준
+            # Ignore uid; use identical ms timestamp only
             ts_ns = int(obj["ts_ns"])
             suffix_ms = int(round(ts_ns / 1_000_000.0))
             return f"t#{suffix_ms}"
@@ -570,7 +570,7 @@ def _dedup_key(obj: Dict[str, Any], mode: str) -> Optional[str]:
         return None
     return None
 
-# 전역 세트 하나만 쓰면 모드 바꿀 때 섞일 수 있으니, 세트는 호출부에서 주입
+# Do not share a single global set across modes; inject the set from the caller
 def _maybe_enqueue(obj: Dict[str, Any], batch: list[Dict[str, Any]],
                    dedup: bool, seen: set[str], dedup_by: str) -> None:
     if not dedup:
@@ -581,9 +581,9 @@ def _maybe_enqueue(obj: Dict[str, Any], batch: list[Dict[str, Any]],
             seen.add(key)
         batch.append(obj)
 
-# pings 정규화 (_normalize_from_ping_dict)
+# Normalize pings (_normalize_from_ping_dict)
 def _normalize_from_ping_dict(d: Dict[str, Any]) -> Dict[str, Any]:
-    uid_int = _uid_to_int(d["uid"])       # ← 정수 강제
+    uid_int = _uid_to_int(d["uid"])       # ← force integer
     ts_ns = int(d["ts_ns"])
     lat_q = int(d["lat_q"])
     lon_q = int(d["lon_q"])
@@ -591,11 +591,11 @@ def _normalize_from_ping_dict(d: Dict[str, Any]) -> Dict[str, Any]:
 
     lat = float(lat_q) / 1e7
     lon = float(lon_q) / 1e7
-    suffix_ms = _suffix_ms_from_ts(ts_ns) # ← ms 접미사 통일
+    suffix_ms = _suffix_ms_from_ts(ts_ns) # ← unify to ms suffix
 
     return {
         "event_id": f"{uid_int}#{suffix_ms}",
-        "uid": uid_int,                    # ← 항상 정수
+        "uid": uid_int,                    # ← always integer
         "ts_ns": ts_ns,
         "lat": lat,
         "lon": lon,

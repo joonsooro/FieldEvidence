@@ -1,7 +1,7 @@
 # scripts/activate.sh
-# zsh / bash 공용, 셸 종료 안 되게 최소 옵션만 사용
+# zsh / bash compatible; use minimal options to avoid exiting the shell
 
-# 스크립트 파일 경로 구하기
+# Resolve script file path
 if [ -n "${BASH_SOURCE:-}" ]; then
   _SELF="${BASH_SOURCE[0]}"       # bash
 elif [ -n "${ZSH_NAME:-}" ]; then
@@ -10,26 +10,26 @@ else
   _SELF="$0"                      # fallback
 fi
 
-# 레포 루트
+# Repo root
 ROOT="$(cd "$(dirname "$_SELF")/.." && pwd)"
 
-# 가능한 Python 선택: 3.11 우선
+# Choose Python if available: prefer 3.11
 if command -v python3.11 >/dev/null 2>&1; then
   PYBIN="python3.11"
 else
   PYBIN="python3"
 fi
 
-# venv 생성(없으면)
+# Create venv if missing
 if [ ! -d "$ROOT/.venv" ]; then
   "$PYBIN" -m venv "$ROOT/.venv"
 fi
 
-# 활성화
+# Activate
 # shellcheck disable=SC1090
 . "$ROOT/.venv/bin/activate"
 
-# 경로
+# Paths
 export PYTHONPATH="$ROOT"
 export PYTHONUNBUFFERED=1
 
