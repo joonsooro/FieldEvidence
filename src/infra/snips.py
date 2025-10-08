@@ -17,6 +17,13 @@ def create_snip(
     cap = cv2.VideoCapture(str(src_mp4))
     if not cap.isOpened():
         return None
+    
+    # try:
+    #     cap.isOpened()
+    #     # existing logic
+    # except Exception as e:
+    #     print("create_snip error:", e, " src:", src, " center:", center_s)
+    # raise   # 또는 다시 던져서 상위에서 확인할 수 있게
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     dur_s = total / fps if total > 0 else 0.0

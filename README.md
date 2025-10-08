@@ -1,137 +1,135 @@
-# FieldEvidence Hackathon POC
+FieldEvidence 
 
-This repository holds a proof-of-concept pipeline for detecting synthetic UAV parasite launches, emitting SALUTE micropings, and visualising them on a CoT map.
+This repository contains a complete proof-of-concept (PoC) pipeline for detecting UAV parasite launches, emitting SALUTE micropings, and performing mock C2 (command-and-control) decision-making with map and video visualization.
 
-## Mission Outcome
+⸻
 
-Operator loads a synthetic UAV clip with a parasite launch. The system auto-detects the launch, emits a SALUTE Protobuf microping (≤80 B), queues if offline, and displays a CoT map pin once connectivity resumes.
+Mission Outcome
 
-## Non-Negotiable Acceptance Criteria
+An operator loads a synthetic UAV clip showing a parasite launch.
+The system:
+	1.	Automatically detects the launch event.
+	2.	Emits a serialized SALUTE Protobuf microping (≤ 80 B).
+	3.	Stores it if offline and replays it when network is back online.
+	4.	Generates a CoT (Cursor-on-Target) XML and displays a corresponding pin on the map.
+	5.	Passes the normalized events into a mock C2 pipeline for estimation, risk scoring, and strike recommendation.
 
-* ≥3 synthetic clips each yield ≥1 detected launch event.
-* Microping serialized size ≤80 B (avg ≤75 B, max ≤80 B).
-* Store-and-forward behaviour:
+⸻
 
-  * **Offline** → micropings saved in SQLite immediately.
-  * **Online** → queue flushed ≤2 s after toggle.
-* CoT pin appears in the Streamlit map ≤5 s after event detection.
-* End-to-end demo runs locally on Python 3.10+ (CPU-only).
+Non-Negotiable Acceptance Criteria
+	•	≥ 3 synthetic clips each yield ≥ 1 detected launch event.
+	•	Microping serialized size ≤ 80 B (avg ≤ 75 B, max ≤ 80 B).
+	•	Store-and-forward behavior:
+	•	Offline → micropings saved to SQLite immediately.
+	•	Online → queue flushed ≤ 2 s after toggle.
+	•	CoT pin appears in the Streamlit map ≤ 5 s after event detection.
+	•	End-to-end demo runs locally on Python 3.10+ (CPU-only).
 
-## Inputs / Outputs
+⸻
 
-### Inputs
+Inputs / Outputs
 
-* `.mp4` synthetic fixed-wing + parasite videos (30 fps, ≤15 s).
-* Optional `.csv` labels with columns `frame,id,class,x,y,w,h`.
+Inputs
+	•	.mp4 synthetic fixed-wing + parasite videos (30 fps, ≤ 15 s).
+	•	Optional .csv labels with columns frame,id,class,x,y,w,h.
 
-### Outputs
+Outputs
+	•	out/events.jsonl — event log.
+	•	out/pings.bin + ping_sizes.json — SALUTE micropings.
+	•	out/queue.db + monitor.jsonl — store-and-forward state.
+	•	out/cot/*.xml — CoT events.
+	•	out/c2_feed.jsonl + out/c2_audit.jsonl — C2 pipeline outputs.
+	•	Streamlit UI (video + map + C2 panel).
 
-* Event log JSON Lines (`.jsonl`).
-* SALUTE microping (Protobuf) using `src/wire/salute.proto` (≤80 B payload).
-* CoT pin rendered in the Streamlit/Leaflet map UI.
+⸻
 
-## Quickstart (Cold-Start on Any Machine)
+Quickstart (Cold-Start on Any Machine)
 
-1. **Clone and enter project**
+git clone git@github.com:joonsooro/EDTH_Hamburg.git
+cd EDTH_Hamburg/field-evidence
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+make check
 
-   ```bash
-   git clone git@github.com:joonsooro/EDTH_Hamburg.git
-   cd EDTH_Hamburg/field-evidence
-   ```
-2. **Create virtual environment + install dependencies**
+If you see
+✅ Pipeline check completed successfully.
+your environment is ready.
 
-   ```bash
-   python3 -m venv .venv && source .venv/bin/activate
-   pip install --upgrade pip setuptools wheel
-   pip install -r requirements.txt
-   ```
-3. **Run full guard check (proto → emit → validate)**
+⸻
 
-   ```bash
-   make check
-   ```
+Generating Synthetic Clips
 
-   If you see
-   `✅ Pipeline check completed successfully.`
-   the environment is correct and the pipeline is working.
-
----
-
-## Generating Synthetic Clips
-
-```bash
 make synth1
-```
 
 or directly:
 
-```bash
 python -m src.synth.synthesize \
   --carrier data/raw/carrier.mp4 \
   --sprite  data/sprites/parasite.png \
   --out_dir data/synthetic --labels_dir data/labels \
   --clips 1 --seed 42 --sep_frame_min 110 --sep_frame_max 120 \
   --num_parasites 2 --anchor_mode wings \
-  --sprite_scale_min 0.04 --sprite_scale_max 0.06 \
-  --wing_dx_ratio 0.38 --wing_dy_ratio 0.06 \
-  --sep_vx_range -5 5 --sep_vy_range -10 -4 --gravity 0.9 \
-  --event_dist_ratio 1.1 --event_min_frames 3
-```
+  --sprite_scale_min 0.04 --sprite_scale_max 0.06
 
-### Notable options
+Debug options: --debug 1 saves overlays to data/synthetic/debug/.
 
-* `--sprite_px_min/--sprite_px_max`: absolute pixel width range (fallback to relative scaling if 0).
-* `--sprite_resize`: `nearest`, `area`, or `lanczos`.
-* `--sprite_unsharp`: amount for post-resize unsharp mask (0 disables).
-* `--anchor_px_offset OX OY`: fine-tune anchor position in pixels.
-* `--debug 1`: writes overlay frames and diagnostics under `data/synthetic/debug/`.
+⸻
 
-## Diagnostics
+Demo Script (≈ 90 s)
+	1.	Operator plays a synthetic clip.
+	2.	Detector overlays bounding boxes; parasite separation triggers an event.
+	3.	Microping (≤ 80 B) preview shows hash + size.
+	4.	Network OFF → microping stored in SQLite.
+	5.	Network ON → queue drains ≤ 2 s.
+	6.	CoT pin appears on the map within 5 s.
+	7.	Mock C2 panel updates: estimation → risk → recommendation → optional “Intercept” dispatch shown on map.
+	8.	Operator exports the SALUTE bundle (JSON + Proto hex).
 
-* Startup prints parsed arguments and sprite sizing info.
-* First three frames log tracker bbox, anchors, and sprite box `(x, y, w, h)`.
-* With `--debug`, CSV diagnostics and overlay video are written to `data/synthetic/debug/`.
+⸻
 
----
+Architecture
 
-## Demo Script (≈75 s)
+The system operates across four packs:
 
-1. Operator plays a synthetic clip (parasite separates).
-2. Detector overlays bounding boxes; divergence triggers launch event.
-3. Event log and SALUTE microping preview display with byte size.
-4. Network OFF → microping stored in SQLite queue.
-5. Network ON → queue drains within 2 s.
-6. CoT pin appears on the Streamlit map within 5 s, coloured by `event_code`.
-7. Operator exports the SALUTE bundle (JSON + Proto hex preview).
+Pack	Responsibility	Representative Files
+Detect + Wire (pre-C2)	Detect events from labeled frames → emit SALUTE micropings	src/detect/detect_launch.py, src/wire/emit_microping.py, src/wire/codec.py
+Infra	Store-and-forward queue, connectivity simulation, CoT encoding, replay	src/infra/store_forward.py, src/infra/net_sim.py, scripts/replay_pipeline.py
+C2	Receiver → estimator → risk → recommendation → scheduler (mock strike dispatch)	src/c2/mock_c2.py, src/c2/estimator.py, src/c2/prioritizer.py, src/c2/recommendation.py, src/c2/scheduler.py
+UI + Ops	Streamlit UI, metrics, and Make targets	src/ui/app.py, Makefile, scripts/*.sh
 
----
+End-to-End flow summary
+	1.	Detect events → out/events.jsonl
+	2.	Emit SALUTE pings → out/pings.bin
+	3.	Replay via SQLite queue (out/queue.db) → out/sent.bin + out/monitor.jsonl
+	4.	Generate CoT XML → out/cot/*.xml
+	5.	C2 consumes pings/events → out/c2_feed.jsonl → estimation / risk / recommendation / dispatch → out/c2_audit.jsonl
+	6.	Streamlit app visualizes map, CoT pins, metrics, and C2 panel.
 
-## Make Targets
+Refer to ARCHITECTURE.md for deep component relationships and RUNBOOK.md for live-demo procedures.
 
-* `make setup` — create `.venv` and install dependencies.
-* `make proto` — regenerate Protobuf code (`*_pb2.py`) from `src/wire/salute.proto`.
-* `make synth` / `make synth1` — generate synthetic clips.
-* `make detect` — run launch detection.
-* `make emit` — emit SALUTE micropings (`out/pings.bin` + `ping_sizes.json`).
-* `make check` — **guard check**: ensures proto generated, micropings emitted, size ≤80 B, and first messages decode correctly.
-* `make replay` — placeholder for store-and-forward replay.
-* `make run` — launch Streamlit UI (`src/ui/app.py`).
-* `make eval` — placeholder for evaluation harness.
-* `make test` — run pytest suite.
+⸻
 
----
+Make Targets
 
-## Operational Guardrails
+Command	Purpose
+make setup	Create .venv and install dependencies
+make proto	Regenerate Protobuf stubs
+make synth / synth1	Generate synthetic clips
+make detect	Run detection
+make emit	Emit SALUTE micropings
+make cot	Generate CoT XMLs
+make replay	Run store-and-forward replay
+make run	Launch Streamlit UI
+make eval	Run evaluation harness
+make test	Run pytest suite
+make check	Full guard check (proto → emit → validate)
 
-Out-of-scope: real UAV data, live ML training, crypto key management, RF integration, or production-grade UI.
 
----
+⸻
 
-## Requirements (Pinned)
+Requirements (Pinned)
 
-This project relies on **pinned versions** to avoid protobuf/gRPC mismatches:
-
-```txt
 numpy==1.26.4
 opencv-python==4.9.0.80
 opencv-contrib-python==4.9.0.80
@@ -145,15 +143,31 @@ protobuf==5.27.2
 grpcio==1.66.1
 grpcio-tools==1.66.1
 pytest==8.1.1
-```
 
----
 
-## Why the Guard Check Matters
+⸻
 
-* **Proto stubs present**: fails fast if you forgot `make proto`.
-* **Microping size OK**: ensures ≤80 B contract before demo.
-* **Decode OK**: guarantees varint framing + schema consistent.
+Operational Guardrails
 
-Running `make check` before a demo saves you from “works on my laptop” surprises.
+Out-of-scope: real UAV data, live ML training, cryptographic key management, RF integration, or production-grade UI.
+Use pinned versions to prevent protobuf/gRPC mismatch.
+
+⸻
+
+Why make check Matters
+	•	Verifies Protobuf stubs exist (make proto done).
+	•	Ensures microping ≤ 80 B before demo.
+	•	Confirms schema integrity (decode OK).
+
+This prevents “works on my laptop” issues before live demos.
+
+⸻
+
+✅ All sections now reflect the latest repository state
+(inc. mock C2, config.yaml, and Streamlit C2 panel).
+⸻
+
+Credits & License
+
+© 2025 FieldEvidence team. For hackathon demo & evaluation. Simulation-only. License TBD.
 
