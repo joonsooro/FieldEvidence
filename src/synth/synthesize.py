@@ -52,7 +52,7 @@ def safe_composite_rgba_bgr(frame_bgr: np.ndarray,
     if h <= 0 or w <= 0:
         return
 
-    # 프레임 클리핑
+    # Frame clipping
     x0 = max(0, x); y0 = max(0, y)
     x1 = min(W, x + w); y1 = min(H, y + h)
     if x0 >= x1 or y0 >= y1:
@@ -64,7 +64,7 @@ def safe_composite_rgba_bgr(frame_bgr: np.ndarray,
     roi = frame_bgr[y0:y1, x0:x1]
     spr = sprite_rgba[sy0:sy1, sx0:sx1, ...]
 
-    # 3채널이면 임시 알파 생성
+    # If 3 channels, create a temporary alpha channel
     if spr.shape[2] == 3:
         gray = cv2.cvtColor(spr, cv2.COLOR_BGR2GRAY)
         _, a = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
@@ -77,7 +77,7 @@ def safe_composite_rgba_bgr(frame_bgr: np.ndarray,
     alpha = spr[:, :, 3].astype(np.float32) / 255.0
     bgr = rgb[..., ::-1].astype(np.float32)
 
-    # 표준 알파 블렌딩
+    # Standard alpha blending
     roi_f = roi.astype(np.float32)
     out = bgr * alpha[..., None] + roi_f * (1.0 - alpha[..., None])
     roi[:] = np.clip(out, 0, 255).astype(np.uint8)
@@ -134,7 +134,7 @@ class Synthesizer:
         self.wing_dx_ratio = args.wing_dx_ratio
         self.wing_dy_ratio = args.wing_dy_ratio
 
-        # 🔙 리버트: 새 파라미터 제거, 단순 기본값만 유지
+        # Revert: remove new parameters; keep only simple defaults
         self.pre_sep_jitter_px = 0
         self.anchor_px_offset = (0.0, 0.0)
         self.sprite_px_min = 0
@@ -196,7 +196,7 @@ class Synthesizer:
             spr = np.dstack([spr, mask])
         elif spr.shape[2] != 4:
             raise ValueError("Sprite must have 3 or 4 channels")
-        # (리버트) BGRA 그대로 사용
+        # (Revert) Use BGRA as-is
         self.sprite_source_size = (spr.shape[1], spr.shape[0])
         return spr.astype(np.uint8)
 
@@ -291,7 +291,7 @@ class Synthesizer:
     def _estimate_carrier_track(self, frames: Sequence[np.ndarray]) -> List[Tuple[float,float,float,float]]:
         """Return (cx,cy,w,h) per frame. If CSRT enabled, run pixel tracker; else fallback heuristic."""
         if self.track_mode != "csrt":
-            # 기존 휴리스틱(스무딩 포함)
+            # Existing heuristic (with smoothing)
             smoothed = []
             prev = None
             for frame in frames:
@@ -303,7 +303,7 @@ class Synthesizer:
                 smoothed.append(prev)  # type: ignore[arg-type]
             return smoothed
 
-        # --- CSRT 경로 ---
+        # --- CSRT path ---
         if legacy is not None and hasattr(legacy, "TrackerCSRT_create"):
             tracker_ctor = legacy.TrackerCSRT_create
         elif hasattr(cv2, "TrackerCSRT_create"):
@@ -311,13 +311,13 @@ class Synthesizer:
         else:
             raise RuntimeError("OpenCV CSRT tracker not available. Install opencv-contrib-python.")
 
-        # 1) 첫 프레임 준비
+        # 1) Prepare first frame
         first = frames[0].copy()
         H, W = first.shape[:2]
 
-        # 2) 초기 bbox 결정
+        # 2) Decide initial bbox
         if self.use_roi:
-            # GUI 선택(헤드리스면 사용 금지)
+            # GUI selection (do not use in headless environments)
             sel = cv2.selectROI("select carrier", first, False, False)  # returns (x,y,w,h)
             cv2.destroyWindow("select carrier")
             if sel is None or sel[2] <= 0 or sel[3] <= 0:
@@ -325,24 +325,24 @@ class Synthesizer:
             init_xywh = sel
         elif self.init_bbox is not None:
             x, y, w, h = self.init_bbox
-            # 화면 안으로 클램프
+            # Clamp within the frame
             x = max(0, min(x, W-1))
             y = max(0, min(y, H-1))
             w = max(8, min(w, W - x))
             h = max(8, min(h, H - y))
             init_xywh = (int(x), int(y), int(w), int(h))
         else:
-            # ROI 미지정 → 휴리스틱으로 첫 bbox 잡고 사용
+            # No ROI provided → use heuristic for the first bbox
             cx, cy, bw, bh = self._estimate_carrier_bbox(first)
             init_xywh = (int(cx - bw/2), int(cy - bh/2), int(bw), int(bh))
 
-        # 3) 트래커 생성/초기화
+        # 3) Create/initialize tracker
         tracker = tracker_ctor()
         ok = tracker.init(first, init_xywh)
         if not ok:
             raise RuntimeError("CSRT init failed")
 
-        # 4) 프레임 순회하며 xywh → cx,cy,w,h로 변환
+        # 4) Iterate frames and convert xywh → cx,cy,w,h
         out: List[Tuple[float,float,float,float]] = []
         for i, f in enumerate(frames):
             if i == 0:
@@ -350,7 +350,7 @@ class Synthesizer:
             else:
                 ok, box = tracker.update(f)
                 if not ok:
-                    # 실패 시 직전 박스 유지 + 약한 확장(드리프트 방어)
+                    # On failure keep previous box and slightly expand (drift guard)
                     x, y, w, h = x, y, w, h
                 else:
                     x, y, w, h = box
@@ -501,9 +501,9 @@ class Synthesizer:
             # --- EVENT LOGIC: distance OR vertical-below-belly ---
             dist_thresh = self.event_dist_ratio * cw
 
-            # 비행기 '배' 기준선: 중심보다 약간 아래(날개/랜딩기어 공간 감안)
-            belly_y = cy + 0.15 * ch            # 필요하면 0.10~0.25 사이로 조절
-            margin_px = max(8, int(0.05 * cw))  # 너무 촘촘한 판정 방지용 여유
+            # Aircraft 'belly' reference line: slightly below center (consider wings/landing gear)
+            belly_y = cy + 0.15 * ch            # adjust within 0.10–0.25 if needed
+            margin_px = max(8, int(0.05 * cw))  # margin to avoid overly tight decisions
 
             centers: List[Optional[Tuple[float, float]]] = []
             distance_values: List[Optional[float]] = []
@@ -526,15 +526,15 @@ class Synthesizer:
                     center = (parasite.x + parasite.w / 2.0, parasite.y + parasite.h / 2.0)
                     centers.append(center)
 
-                    # 기존 거리 조건
+                    # Original distance condition
                     distance = math.hypot(center[0] - cx, center[1] - cy)
                     distance_values.append(distance)
                     cond_far = (distance > dist_thresh)
 
-                    # 새 수직 조건: 분리됐고, '배’ 기준선보다 margin만큼 충분히 아래로 내려갔는가?
+                    # New vertical condition: detached and sufficiently below the belly line by margin
                     cond_below = (parasite.detached and (center[1] > (belly_y + margin_px)))
 
-                    # 두 조건 중 하나라도 만족하면 카운트 증가
+                    # If either condition is met, increment the counter
                     if cond_far or cond_below:
                         parasite.k += 1
                     else:
@@ -611,7 +611,7 @@ class Synthesizer:
         else:
             event_frame_value = event_frame_global
 
-        # 항상 labels/mp4/json을 쓰도록 이동 ↓
+        # Always write labels/mp4/json here ↓
         labels_path = self.labels_dir / f"{clip_uid}.csv"
         self._write_labels(labels_path, labels)
         manifest_path = self.out_dir / f"{clip_uid}.json"
@@ -653,7 +653,7 @@ class Synthesizer:
         desired_width = max(1, int(round(desired_width)))
         scale = desired_width / float(base_w)
         desired_height = max(2, int(round(base_h * scale)))
-        # (리버트) 간단히 AREA 리사이즈
+        # (Revert) Simple AREA resize
         return cv2.resize(sprite, (desired_width, desired_height), interpolation=cv2.INTER_AREA)
 
     def _apply_unsharp(self, img_bgr: np.ndarray, amount: float) -> np.ndarray:
@@ -936,12 +936,12 @@ def _track_csrt(self, frames: Sequence[np.ndarray],
     return out
 
 def _estimate_carrier_track(self, frames):
-    # 1) 명시 bbox 있으면 CSRT로
+    # 1) If bbox explicitly provided, use CSRT
     if self.args.track == "csrt" and self.args.carrier_bbox:
         X,Y,W,H = self.args.carrier_bbox
         return self._track_csrt(frames, (int(X),int(Y),int(W),int(H)))
 
-    # 2) CSRT인데 init bbox가 없다? GUI 가능하면 selectROI, 아니면 경고 후 휴리스틱
+    # 2) CSRT without an init bbox? Use selectROI if GUI is available; otherwise warn and fall back to heuristic.
     if self.args.track == "csrt" and not self.args.carrier_bbox:
         try:
             f0 = frames[0].copy()
@@ -951,7 +951,7 @@ def _estimate_carrier_track(self, frames):
                 return self._track_csrt(frames, (int(r[0]),int(r[1]),int(r[2]),int(r[3])))
         except Exception as e:
             print(f"[warn] ROI GUI not available ({e}); falling back to heuristic.", file=sys.stderr)
-    # 3) 기본: 기존 휴리스틱 + EMA
+    # 3) Default: existing heuristic + EMA
     smoothed = []
     prev = None
     for frame in frames:

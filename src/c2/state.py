@@ -27,43 +27,43 @@ class C2State:
         uid = int(ev["uid"])
         ts_ns = int(ev["ts_ns"])
         st = self.targets.setdefault(uid, TargetState(uid))
-        # 추정기 업데이트
+        # Update tracker
         st.tracker.update({"ts_ns": ts_ns, "lat": ev["lat"], "lon": ev["lon"]})
 
-        # 최신 추정으로 리스크/권고 산출
+        # Compute risk/recommendation from latest estimate
         est = st.tracker.estimate(ts_ns)
         risk = compute_risk(est, target_lat, target_lon, cfg)
-        # 권고는 SUSPECT/IMMEDIATE 모두 생성(OBSERVE/INTERCEPT)
+        # Produce recommendations for SUSPECT/IMMEDIATE (OBSERVE/INTERCEPT)
         from .recommendation import make_recommendation
         reco = make_recommendation(est, ev, target_lat, target_lon, cfg)
 
         st.last_risk, st.last_reco = risk, reco
         st.history.append({"ts_ns": ts_ns, "risk": risk, "reco": reco})
 
-        # SUSPECT면 재평가 타이머 세팅
+        # If SUSPECT, set re-evaluation timer
         if risk["status"] == "SUSPECT" and st.re_eval_at_ns is None:
             st.re_eval_at_ns = ts_ns + self.promote_after_ns
 
     def tick(self, now_ns: int, cfg: dict, target_lat: float, target_lon: float):
-        # 타이머 만료된 SUSPECT 대상 재평가
+        # Re-evaluate SUSPECT targets whose timer expired
         for st in self.targets.values():
             if st.re_eval_at_ns and now_ns >= st.re_eval_at_ns:
-                # 옵션: 새 이벤트가 없었다면 패스
+                # Option: skip if no new events arrived
                 if self.require_new_event:
-                    # last history의 ts_ns가 re_eval window 이후로 들어왔는지 확인
+                    # Check if history has ts_ns after the re-eval window
                     newest_ts = max(h["ts_ns"] for h in st.history) if st.history else 0
                     if newest_ts < st.re_eval_at_ns:
-                        continue  # 새 이벤트 없음 → 재평가 보류
+                        continue  # No new events → defer re-evaluation
 
-                # 가장 최근 관측 시각으로 재평가
+                # Re-evaluate at the most recent observation time
                 ref_ts = max(h["ts_ns"] for h in st.history) if st.history else now_ns
                 est = st.tracker.estimate(ref_ts)
-                # re-eval 시 confidence가 낮아졌다면 그대로 반영됨
+                # If confidence has decayed by re-eval time, reflect that as-is
                 dummy_event = {"event_id": f"reval#{now_ns}", "uid": st.uid, "ts_ns": ref_ts}
                 risk = compute_risk(est, target_lat, target_lon, cfg)
                 reco = make_recommendation(est, dummy_event, target_lat, target_lon, cfg)
                 st.last_risk, st.last_reco = risk, reco
                 st.history.append({"ts_ns": now_ns, "risk": risk, "reco": reco})
-                # IMMEDIATE이면 타이머 제거
+                # Clear timer if IMMEDIATE
                 if risk["status"] == "IMMEDIATE":
                     st.re_eval_at_ns = None
