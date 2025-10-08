@@ -59,7 +59,7 @@ def main():
     if not ev_path.exists():
         print(f"[ERR] events not found: {ev_path}"); return 2
 
-    # 기존 큐 깊이(이미 쌓여 있던 개수) 저장
+    # Record existing queue depth (items already enqueued)
     existing0 = depth()
 
     payloads = load_pings(ev_path)
@@ -69,7 +69,7 @@ def main():
     enq_total = len(payloads)
     print(f"[ENQ] enqueued {enq_total} payload(s).")
 
-    # 이번 세션에서 실제로 전송될 총 기대치(기존 + 새로 enq)
+    # Total expected to send this session (existing + newly enqueued)
     total_expected = existing0 + enq_total
 
     pattern = parse_pattern(args.pattern)
@@ -82,10 +82,10 @@ def main():
     set_online(pattern[0][1])
     print(f"[NET] {'ONLINE' if is_online() else 'offline'} for {phase_remaining}s")
 
-    # 직전 샘플 보존 버퍼
-    last_latencies: List[float] = []         # E2E latency (마지막 비어있지 않은 샘플)
-    last_drain_latencies: List[float] = []   # drain-only latency (마지막 비어있지 않은 샘플)
-    # 누적 전송량 (이 프로세스에서 실제 전송량만 합산)
+    # Preserve previous non-empty samples
+    last_latencies: List[float] = []         # E2E latency (last non-empty sample)
+    last_drain_latencies: List[float] = []   # drain-only latency (last non-empty sample)
+    # Cumulative sends (sum only what this process sent)
     sent_tot_acc = 0
 
     MON_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -99,7 +99,7 @@ def main():
         next_t += 1.0
         now_ns = time.monotonic_ns()
 
-        # 현재 틱의 측정값 컨테이너(항상 초기화)
+        # Per-tick measurement containers (always reset)
         lat_e2e: List[float] = []
         lat_drn: List[float] = []
 

@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out", dest="out_path", default="out/events.jsonl", help="Output JSONL path")
     p.add_argument("--viz", dest="viz_dir", default=None, help="Output viz dir (annotated videos)")
 
-    # 기존 튜닝(상관 게이트 사용 시에만 의미 있음)
+    # Legacy tuning (only meaningful when using the correlation gate)
     p.add_argument("--dist_ratio", type=float, default=1.06, help="Distance ratio to carrier width")
     p.add_argument("--corr_thr", type=float, default=0.60, help="Max abs corr threshold")
     p.add_argument("--k", type=int, default=2, help="Min consecutive frames for trigger")
@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--corr_mode", default="vel", choices=["pos","vel"], help="correlation on position or velocity")
     p.add_argument("--corr_lag", type=int, default=0, help="positive = carrier leads parasite by this many frames")
 
-    # 새 옵션: 상관 게이트 비활성 + 폴백(거리+기울기)
+    # New options: disable correlation gate + fallback (distance + slope)
     p.add_argument("--use_corr", type=int, default=0, help="1=use correlation gate, 0=disable (fallback only)")
     p.add_argument("--lag_sweep", type=int, default=1, help="check min corr over [-lag_sweep..+lag_sweep] when use_corr=1")
     p.add_argument("--ratio_hi", type=float, default=0.85, help="fallback: distance ratio threshold on dist/cw")
@@ -110,7 +110,7 @@ def _pearson(a, b):
     return r
 
 def _sliding_corr_pos_or_vel(cx, cy, px, py, win=5, mode="vel", lag=0):
-    # lag 적용 (carrier를 앞/뒤로 이동)
+    # Apply lag (shift carrier forward/backward)
     def _lag(seq, l):
         if l == 0: return seq
         if l > 0:  return seq[l:] + [seq[-1]]*l
@@ -136,9 +136,9 @@ def _sliding_corr_pos_or_vel(cx, cy, px, py, win=5, mode="vel", lag=0):
         s = max(0, i - win + 1)
         rx = _pearson(Cx[s:i+1], Px[s:i+1])
         ry = _pearson(Cy[s:i+1], Py[s:i+1])
-        # *** 핵심: 두 축 중 더 약한 상관을 사용 ***
+        # NOTE: Use the weaker correlation of the two axes
         corr[i] = min(abs(rx), abs(ry))
-    # 길이 맞추기 (원본 프레임 길이로 패딩)
+    # Match length (pad to original frame count)
     return [1.0]*(len(cx)-len(corr)) + corr
 
 def _to_float(v: Optional[str]) -> Optional[float]:
@@ -316,10 +316,10 @@ def detect_events(
         dist = (dx*dx + dy*dy) ** 0.5
         ratio.append(dist / max(cw[i], 1e-6))
 
-    # ratio 기울기(속도 경향)
+    # Ratio slope (speed trend)
     dr = [0.0] + [ratio[i]-ratio[i-1] for i in range(1, n)]
 
-    # 상관: lag 스윕으로 최소값을 사용
+    # Correlation: use the minimum over the lag sweep
     if use_corr:
         corr_all = []
         for L in range(-lag_sweep, lag_sweep+1):
@@ -327,20 +327,20 @@ def detect_events(
             if len(corr_L) < n:
                 corr_L = [1.0]*(n - len(corr_L)) + corr_L
             corr_all.append(corr_L)
-        # 프레임별 최소(abs) 상관
+        # Per-frame minimum (absolute) correlation
         corr = [min(corr_all[j][i] for j in range(len(corr_all))) for i in range(n)]
     else:
         corr = [1.0]*n
 
-    # 통계
+    # Statistics
     finite_ratios = [r for r in ratio if math.isfinite(r)]
     max_ratio = max(finite_ratios) if finite_ratios else 0.0
     min_corr = min(corr) if corr else 1.0
 
     events: List[Tuple[int, float]] = []
-    # A) 표준 상관 게이트
+    # A) Standard correlation gate
     streakA = 0; armedA = True
-    # B) 폴백(거리+기울기)
+    # B) Fallback (distance + slope)
     streakB = 0; armedB = True
 
     for i in range(n):
@@ -349,7 +349,7 @@ def detect_events(
         condA = (not use_corr) or (corr[i] < corr_thr)
         condB = dr[i] > ratio_slope_thr
 
-        # A 게이트
+        # A gate
         if farA and condA:
             streakA += 1
         else:
@@ -359,18 +359,18 @@ def detect_events(
             events.append((frames[i], float(conf)))
             armedA = False
 
-        # B 폴백
+        # B fallback
         if farB and condB:
             streakB += 1
         else:
             streakB = 0; armedB = True
         if streakB >= k_fallback and armedB:
-            # corr을 쓰지 않을 때는 conf를 ratio 기반으로만
+            # When not using correlation, derive conf from ratio only
             conf = min(1.0, (ratio[i]-ratio_hi) / max(0.02, ratio_slope_thr*win))
             events.append((frames[i], float(conf)))
             armedB = False
 
-    # 중복 프레임 제거(빠른 트리거 우선)
+    # Remove duplicate frames (prefer earlier trigger)
     events.sort(key=lambda x: x[0])
     dedup = []
     seen = set()
@@ -566,7 +566,7 @@ def main() -> None:
                     chosen = None
                     if events:
                         if getattr(args, "clip_select", "best_conf") == "best_conf":
-                            chosen = max(events, key=lambda e: e[1])  # (frame, conf) 중 conf 최대
+                            chosen = max(events, key=lambda e: e[1])  # choose by max conf among (frame, conf)
                         else:
                             chosen = events[0]  # earliest
                     if chosen is not None:
